@@ -5,12 +5,14 @@
 -- Task 6.1: skeleton composition (titlebar stub, hero, chip strip, shelf pair)
 -- Task 6.2: real TitleBar with gear icon; tappable shelf-pair label → LibraryView
 -- Task 6.3: long-press book menu; series-stack expand-in-place
+-- Task 9.1: empty states — chip-zero placeholder card
 
 local InputContainer  = require("ui/widget/container/inputcontainer")
 local FrameContainer  = require("ui/widget/container/framecontainer")
 local VerticalGroup   = require("ui/widget/verticalgroup")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local TextWidget      = require("ui/widget/textwidget")
+local TextBoxWidget   = require("ui/widget/textboxwidget")
 local Geom            = require("ui/geometry")
 local GestureRange    = require("ui/gesturerange")
 local Size            = require("ui/size")
@@ -19,6 +21,8 @@ local UIManager       = require("ui/uimanager")
 local TitleBar        = require("ui/widget/titlebar")
 local Blitbuffer      = require("ffi/blitbuffer")
 local Screen          = require("device").screen
+
+local _           = require("bookshelf_i18n").gettext
 
 local Repo        = require("book_repository")
 local HeroCard    = require("hero_card")
@@ -111,6 +115,59 @@ function BookshelfWidget:_rebuild()
     local items     = self:_fetchChipItems(8)
     local total     = self:_chipTotal()
     local shown     = math.min(8, #items)
+
+    -- ── Empty-state placeholder (spec §8: "Selected chip yields zero books") ────
+    -- When the active chip returns no items, replace both shelf rows with a
+    -- single paper-card placeholder carrying chip-specific guidance text.
+    -- This path is reached for:
+    --   • "favorites"  when ReadCollection.favorites is empty or missing
+    --   • "series"     when no books in ReadHistory carry series metadata
+    --   • "recent"     when ReadHistory is empty
+    --   • "latest"     when home_dir is empty / yields no supported files
+    if #items == 0 then
+        local placeholder_text
+        if self.chip == "series" then
+            placeholder_text = _("Nothing in Series yet · Add series metadata to your books and they will appear here")
+        elseif self.chip == "favorites" then
+            placeholder_text = _("No favourites yet · Long-press a book and tap 'Add to favourites'")
+        elseif self.chip == "latest" then
+            placeholder_text = _("No books found · Set your library folder in Settings then tap Latest")
+        else
+            placeholder_text = string.format(_("No books in %s yet"), self:_chipLabel())
+        end
+
+        local paper_bg = type(Blitbuffer.gray) == "function"
+            and Blitbuffer.gray(0.93) or Blitbuffer.COLOR_WHITE
+        local card_bg  = type(Blitbuffer.gray) == "function"
+            and Blitbuffer.gray(0.95) or Blitbuffer.COLOR_WHITE
+
+        local placeholder = FrameContainer:new{
+            bordersize = Size.border.thin,
+            background = card_bg,
+            padding    = Size.padding.large,
+            width      = content_w,
+            TextBoxWidget:new{
+                text      = placeholder_text,
+                face      = Font:getFace("infofont", 12),
+                width     = content_w - Size.padding.large * 2,
+                alignment = "center",
+            },
+        }
+
+        self[1] = FrameContainer:new{
+            bordersize = 0,
+            padding    = PAD,
+            background = paper_bg,
+            VerticalGroup:new{
+                align = "left",
+                titlebar,
+                hero,
+                chips,
+                placeholder,
+            },
+        }
+        return
+    end
 
     -- ── Shelf-pair label (tappable → LibraryView or collapse series) ────────────
     -- Defined as a local InputContainer subclass using the standard extend-pattern
