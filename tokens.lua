@@ -101,6 +101,12 @@ Tokens.expanders.mem   = function(_b, s) return s and s.mem and (tostring(s.mem)
 Tokens.expanders.ram   = function(_b, s) return s and s.ram_mib and (tostring(s.ram_mib) .. " MiB") or "" end
 Tokens.expanders.disk  = function(_b, s) return s and s.disk_free or "" end
 
+-- Bar: book-progress bar. The hero card has a dedicated ProgressWidget
+-- separate from token lines in v0.1, so %bar inline expands to empty.
+-- A future version may render an inline progress glyph here, matching
+-- bookends' `%bar` semantics.
+Tokens.expanders.bar = function() return "" end
+
 -- ─── Conditional evaluator ──────────────────────────────────────────────────
 -- Recognises [if:cond]…[else]…[/if]. Cond grammar:
 --   atom    := [not] (token | token op value)
@@ -152,6 +158,7 @@ local function evaluateAtom(atom, book, state)
             elseif op == ">=" then result = lhs_n >= rhs_n
             end
         end
+        if result == nil then result = false end
         if negate then result = not result end
         return result
     end
@@ -166,8 +173,15 @@ local function evaluateExpr(expr, book, state)
     local parts, ops = {}, {}
     local pos = 1
     while true do
-        local s, e, op = expr:find("%s+(and)%s+", pos)
-        if not s then s, e, op = expr:find("%s+(or)%s+", pos) end
+        -- find next operator: leftmost of and/or, by position
+        local sa, ea = expr:find("%s+and%s+", pos)
+        local so, eo = expr:find("%s+or%s+",  pos)
+        local s, e, op
+        if sa and (not so or sa <= so) then
+            s, e, op = sa, ea, "and"
+        elseif so then
+            s, e, op = so, eo, "or"
+        end
         if not s then parts[#parts + 1] = expr:sub(pos); break end
         parts[#parts + 1] = expr:sub(pos, s - 1)
         ops[#ops + 1] = op
@@ -254,9 +268,10 @@ end
 
 function Tokens.isEmpty(s)
     if not s then return true end
-    -- Strip inline format tags before deciding emptiness, otherwise [b][/b]
-    -- around an empty value would count as non-empty.
-    local stripped = s:gsub("%[/?[a-z]%]", "")
+    -- Strip the v0.1 inline format tags ([b][i][u] and closers) before deciding
+    -- emptiness, otherwise [b][/b] around an empty value would count as
+    -- non-empty. New format tags added in future versions need to be added here.
+    local stripped = s:gsub("%[/?[biu]%]", "")
     return stripped:match("^%s*$") ~= nil
 end
 

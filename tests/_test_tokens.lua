@@ -178,5 +178,27 @@ test("autoHide: line with literal text is not empty", function()
     eq(Tokens.isEmpty(Tokens.expand("Reading %title", bookFixture())), false)
 end)
 
+test("if: or before and (left-to-right operator scan)", function()
+    local b = bookFixture(); b.series = nil; b.book_pct = 0.95
+    -- 'series' is empty (false), but 'book_pct>50' is true; left-to-right
+    -- evaluation: false or true = true; (true) and (true [book_pct>0]) = true
+    eq(Tokens.expand("[if:series or book_pct>50]yes[/if]", b), "yes")
+end)
+
+test("if: unknown comparison operator → false (defensive default)", function()
+    -- '==' is not a supported operator. The atom should evaluate to false,
+    -- not silently flip to true via 'not nil'.
+    eq(Tokens.expand("[if:not author==\"Frank\"]matched[/if]", bookFixture()), "matched")
+end)
+
+test("isEmpty: only [b][i][u] tags strip, not arbitrary single-letter tags", function()
+    -- A future hypothetical [c]color[/c] tag should NOT be stripped by isEmpty.
+    eq(Tokens.isEmpty("[c]hi[/c]"), false)
+end)
+
+test("bar: %bar expands to empty (deferred to renderer)", function()
+    eq(Tokens.expand("%bar", bookFixture()), "")
+end)
+
 io.write(string.format("\n%d passed, %d failed\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)
