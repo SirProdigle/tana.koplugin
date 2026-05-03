@@ -83,14 +83,9 @@ function SpineWidget:_renderFallback()
         author,
     }
 
-    -- Blitbuffer.gray(0.95): paper-tone (nearly white on greyscale e-ink,
-    -- gives subtle paper feel). Falls back to COLOR_WHITE if gray() unavailable.
-    local paper
-    if type(Blitbuffer.gray) == "function" then
-        paper = Blitbuffer.gray(0.95)
-    else
-        paper = Blitbuffer.COLOR_WHITE
-    end
+    -- Faint grey card so the "no cover" fallback reads as a tile against the
+    -- white page. Blitbuffer.gray semantics: 0 = white, 1 = black.
+    local paper = Blitbuffer.gray(0.07)
 
     return FrameContainer:new{
         bordersize    = Size.border.thin,

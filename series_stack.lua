@@ -84,13 +84,9 @@ function SeriesStack:init()
     local band_h   = math.floor(self.height * 0.18)
     local band_top = math.floor(self.height * 0.46) - math.floor(band_h / 2)
 
-    -- paper tone helper (same as SpineWidget)
-    local paper
-    if type(Blitbuffer.gray) == "function" then
-        paper = Blitbuffer.gray(0.95)
-    else
-        paper = Blitbuffer.COLOR_WHITE
-    end
+    -- Count badge fill: pure white so the digits stay legible on top of any
+    -- cover image (covers vary; white is the safest contrast for black ink).
+    local paper = Blitbuffer.COLOR_WHITE
 
     local band_inner = FrameContainer:new{
         bordersize = 0,

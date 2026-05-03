@@ -136,10 +136,11 @@ function BookshelfWidget:_rebuild()
             placeholder_text = string.format(_("No books in %s yet"), self:_chipLabel())
         end
 
-        local paper_bg = type(Blitbuffer.gray) == "function"
-            and Blitbuffer.gray(0.93) or Blitbuffer.COLOR_WHITE
-        local card_bg  = type(Blitbuffer.gray) == "function"
-            and Blitbuffer.gray(0.95) or Blitbuffer.COLOR_WHITE
+        -- Blitbuffer.gray semantics: 0 = white, 1 = black (i.e. "blackness level").
+        -- Page background is plain white (matches e-ink unprinted paper);
+        -- placeholder card has a faint grey tint to set it apart from the page.
+        local paper_bg = Blitbuffer.COLOR_WHITE
+        local card_bg  = Blitbuffer.gray(0.07)
 
         local placeholder = FrameContainer:new{
             bordersize = Size.border.thin,
@@ -260,13 +261,11 @@ function BookshelfWidget:_rebuild()
     }
 
     -- ── Assemble ──────────────────────────────────────────────────────────────
-    -- paper-tone background for the whole widget
-    local paper_bg
-    if type(Blitbuffer.gray) == "function" then
-        paper_bg = Blitbuffer.gray(0.93)
-    else
-        paper_bg = Blitbuffer.COLOR_WHITE
-    end
+    -- Page background = pure white (e-ink unprinted paper). The defensive
+    -- gray() guard from earlier was redundant AND used inverted semantics
+    -- (0 = white, 1 = black per Blitbuffer.gray), which produced a near-black
+    -- page on first render.
+    local paper_bg = Blitbuffer.COLOR_WHITE
 
     self[1] = FrameContainer:new{
         bordersize = 0,

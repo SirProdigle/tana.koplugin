@@ -42,13 +42,9 @@ function ChipStrip:init()
     local row = HorizontalGroup:new{}
     self._chip_dimens = {}
 
-    -- paper tone helper
-    local paper
-    if type(Blitbuffer.gray) == "function" then
-        paper = Blitbuffer.gray(0.95)
-    else
-        paper = Blitbuffer.COLOR_WHITE
-    end
+    -- Inactive chip background: page colour (pure white) so the chip reads as
+    -- an outlined button against the page. Active chip is inverted to black.
+    local paper = Blitbuffer.COLOR_WHITE
 
     for i, chip in ipairs(self.chips) do
         local is_active = (chip.key == self.active)
