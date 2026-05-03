@@ -162,5 +162,13 @@ test("inline: nested [b][i] preserved", function()
     eq(Tokens.expand("[b][i]%title[/i][/b]", bookFixture()), "[b][i]Dune[/i][/b]")
 end)
 
+test("width: {N} cap is preserved as marker for renderer", function()
+    -- The token engine resolves the value but leaves {N} intact, so the
+    -- renderer can measure pixels and truncate. We test that the token
+    -- expansion happens AND the width-cap suffix is preserved.
+    local b = bookFixture(); b.title = "An extremely long book title that goes on"
+    eq(Tokens.expand("%title{200}", b), "An extremely long book title that goes on{200}")
+end)
+
 io.write(string.format("\n%d passed, %d failed\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)
