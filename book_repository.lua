@@ -146,4 +146,67 @@ function Repo.getLatest(limit)
     return out
 end
 
+-- ─── getFavorites ────────────────────────────────────────────────────────────
+-- Returns up to `limit` Book records from ReadCollection favorites collection,
+-- sorted by access time descending (most recently accessed first).
+
+function Repo.getFavorites(limit)
+    local rc    = getCollections()
+    local items = {}
+    for _file, item in pairs(rc.coll and rc.coll.favorites or {}) do
+        items[#items + 1] = item
+    end
+    table.sort(items, function(a, b)
+        return (a.attr and a.attr.access or 0) > (b.attr and b.attr.access or 0)
+    end)
+    local out = {}
+    for i = 1, math.min(limit or 8, #items) do
+        local book = Repo.buildBook(items[i].file)
+        if book then
+            book.in_favorites = true
+            out[#out + 1] = book
+        end
+    end
+    return out
+end
+
+-- ─── getSeriesGroups ─────────────────────────────────────────────────────────
+-- Returns up to `limit` series groups derived from ReadHistory.
+-- Each group is { series_name, books, latest } where books are sorted by
+-- series_num ascending. Groups are sorted by most recent activity descending.
+-- Books without a series_name are excluded.
+
+function Repo.getSeriesGroups(limit)
+    local rh     = getReadHistory()
+    local groups = {}  -- keyed by series_name
+    local order  = {}  -- preserves insertion order for deterministic sorting
+    for _, entry in ipairs(rh.hist) do
+        local book = Repo.buildBook(entry.file)
+        if book and book.series_name then
+            local key = book.series_name
+            if not groups[key] then
+                groups[key] = { series_name = key, books = {}, latest = 0 }
+                order[#order + 1] = key
+            end
+            groups[key].books[#groups[key].books + 1] = book
+            if entry.time > groups[key].latest then
+                groups[key].latest = entry.time
+            end
+        end
+    end
+    -- Flatten to list and sort by most recent activity.
+    local list = {}
+    for _, k in ipairs(order) do list[#list + 1] = groups[k] end
+    table.sort(list, function(a, b) return a.latest > b.latest end)
+    -- Within each group, sort books by series_num ascending.
+    for _, g in ipairs(list) do
+        table.sort(g.books, function(a, b)
+            return (tonumber(a.series_num) or 0) < (tonumber(b.series_num) or 0)
+        end)
+    end
+    local out = {}
+    for i = 1, math.min(limit or 4, #list) do out[i] = list[i] end
+    return out
+end
+
 return Repo

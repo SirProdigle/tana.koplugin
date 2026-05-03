@@ -141,5 +141,50 @@ test("getLatest: orders by mtime desc, respects limit and depth", function()
 end)
 
 -- ============================================================================
+-- Task 2.4: getFavorites + getSeriesGroups
+-- ============================================================================
+
+test("getFavorites: pulls from ReadCollection.coll.favorites", function()
+    package.loaded["readcollection"].coll = {
+        favorites = {
+            ["/a.epub"] = { file = "/a.epub", attr = { access = 200 } },
+            ["/b.epub"] = { file = "/b.epub", attr = { access = 300 } },
+        }
+    }
+    _G._test_bim_data = {
+        ["/a.epub"] = { title = "A" },
+        ["/b.epub"] = { title = "B" },
+    }
+    local favs = Repo.getFavorites(10)
+    assert(#favs == 2)
+    assert(favs[1].title == "B", "expected B (most recent) first")
+end)
+
+test("getSeriesGroups: groups books by series_name, sorts by latest activity", function()
+    package.loaded["readhistory"].hist = {
+        { file = "/dune.epub", time = 500 },
+        { file = "/foundation1.epub", time = 400 },
+        { file = "/foundation2.epub", time = 450 },
+        { file = "/standalone.epub", time = 100 },
+    }
+    _G._test_bim_data = {
+        ["/dune.epub"]        = { title = "Dune", series = "Dune #1" },
+        ["/foundation1.epub"] = { title = "Foundation", series = "Foundation #1" },
+        ["/foundation2.epub"] = { title = "Foundation and Empire", series = "Foundation #2" },
+        ["/standalone.epub"]  = { title = "Standalone" },
+    }
+    local groups = Repo.getSeriesGroups(10)
+    -- Standalone should NOT appear (no series).
+    assert(#groups == 2, "expected 2 series groups, got " .. #groups)
+    -- Dune is most recently active (time=500).
+    assert(groups[1].series_name == "Dune")
+    assert(groups[2].series_name == "Foundation")
+    -- Foundation has 2 books; ensure ordered by series_num.
+    assert(#groups[2].books == 2)
+    assert(groups[2].books[1].title == "Foundation")
+    assert(groups[2].books[2].title == "Foundation and Empire")
+end)
+
+-- ============================================================================
 io.write(string.format("\n%d passed, %d failed\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)
