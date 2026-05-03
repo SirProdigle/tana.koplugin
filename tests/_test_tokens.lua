@@ -155,5 +155,12 @@ test("if: equality with quoted string", function()
     eq(Tokens.expand([=[[if:author="Frank Herbert"]✓[/if]]=], bookFixture()), "✓")
 end)
 
+test("inline: [b]bold[/b] tags survive expansion", function()
+    eq(Tokens.expand("[b]%title[/b]", bookFixture()), "[b]Dune[/b]")
+end)
+test("inline: nested [b][i] preserved", function()
+    eq(Tokens.expand("[b][i]%title[/i][/b]", bookFixture()), "[b][i]Dune[/i][/b]")
+end)
+
 io.write(string.format("\n%d passed, %d failed\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)
