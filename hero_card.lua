@@ -41,9 +41,19 @@ local HeroCard = InputContainer:extend{
 
 -- Reads the user's font-scale setting (% of nominal). Applied on top of
 -- per-region font_size so the user can dial the whole hero up or down.
+-- Defensive fallback: if Font:getFace errors or returns nil for the
+-- requested face_name (e.g. a stale "@family:serif" sentinel from a
+-- prior bookends-picker tap, or a font file that has since been
+-- removed from the filesystem), drop back to "infofont" so the render
+-- never crashes on a missing face.
 local function fontFace(face_name, base)
     local scale = (G_reader_settings:readSetting("bookshelf_font_scale") or 100) / 100
-    return Font:getFace(face_name or "infofont", math.max(8, math.floor(base * scale + 0.5)))
+    local size = math.max(8, math.floor(base * scale + 0.5))
+    if face_name then
+        local ok, face = pcall(Font.getFace, Font, face_name, size)
+        if ok and face then return face end
+    end
+    return Font:getFace("infofont", size)
 end
 
 local BAR_TOKEN_PATTERN = "%%bar"

@@ -82,12 +82,29 @@ end
 -- self table — the function only uses self.frame for tap-outside dismissal,
 -- a transient field that doesn't need a real Bookends instance.
 local function showFontPicker(current_face, default_face, on_select)
+    -- Bookends's picker injects "@family:serif" / "@family:fantasy" /
+    -- "@family:cursive" sentinel rows that resolve via KOReader's CRengine
+    -- font_family settings — that resolution only happens inside the
+    -- Reader context, where bookshelf doesn't run. Filter those out at
+    -- the callback boundary with a friendly message instead of letting
+    -- the literal string flow through to Font:getFace and crash render.
+    local function safe_select(file)
+        if type(file) == "string" and file:match("^@family:") then
+            local InfoMessage = require("ui/widget/infomessage")
+            UIManager:show(InfoMessage:new{
+                text = _("Font-family fonts (serif, sans-serif, etc.) only resolve inside the Reader view. Pick a specific font file instead."),
+                timeout = 3,
+            })
+            return
+        end
+        on_select(file)
+    end
     local ok_pl, PluginLoader = pcall(require, "pluginloader")
     if ok_pl and PluginLoader and PluginLoader.enabled_plugins then
         for _i, plugin in ipairs(PluginLoader.enabled_plugins) do
             if plugin.name == "bookends" and type(plugin.showFontPicker) == "function" then
                 local ok = pcall(plugin.showFontPicker, {}, current_face,
-                    function(file) on_select(file) end, default_face)
+                    safe_select, default_face)
                 if ok then return end
                 break -- bookends present but the call failed; fall through to fallback
             end
@@ -96,9 +113,9 @@ local function showFontPicker(current_face, default_face, on_select)
     -- Fallback: native KOReader FontList.
     local Menu   = require("ui/widget/menu")
     local Screen = require("device").screen
-    local items  = { { text = _("(Default)"), callback = function() on_select(nil) end } }
+    local items  = { { text = _("(Default)"), callback = function() safe_select(nil) end } }
     for _i, file in ipairs(FontList:getFontList() or {}) do
-        items[#items + 1] = { text = file, callback = function() on_select(file) end }
+        items[#items + 1] = { text = file, callback = function() safe_select(file) end }
     end
     local mw = math.floor(Screen:getWidth() * 0.85)
     local mh = math.floor(Screen:getHeight() * 0.7)
