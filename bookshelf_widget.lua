@@ -545,6 +545,12 @@ function BookshelfWidget:_openBook(book)
     -- middle of an expanded series.
     self._expanded_series = nil
     self._preview_book    = nil
+    -- Suspend the status timer + drop any pending debounced repaint
+    -- before the reader takes over. Keeping the minute heartbeat alive
+    -- under the reader is wasted Lua wakeups — battery matters most
+    -- during a long read. Bookshelf:show() re-arms us when the user
+    -- closes the book.
+    self:_stopStatusTimer()
     local ReaderUI = require("apps/reader/readerui")
     ReaderUI:showReader(book.filepath)
 end
@@ -820,65 +826,157 @@ function BookshelfWidget:onCloseWidget()
 end
 
 -- ─── Status-line auto-refresh ───────────────────────────────────────────────
--- Drives a minute-aligned re-paint of the hero's right column so the
--- clock / battery / wifi / brightness tokens in the user's status template
--- update without the user picking a different book or opening a menu.
+-- Two refresh paths, both targeting the hero's right column (the cover
+-- stays untouched):
 --
--- The timer self-reschedules; the _status_timer_active flag is the kill
--- switch. Pending callbacks check the flag and bail if it's been cleared,
--- so we don't need UIManager:unschedule.
+--   1. A minute-aligned heartbeat for tokens that drift purely with
+--      wall-clock time (clock, dates, time-left projections, battery %).
+--   2. Event handlers for state that changes asynchronously (charging,
+--      network, frontlight) — these get a 0.3s debounce so a slider drag
+--      doesn't fire ten setDirty calls in a second.
 --
--- We skip the tick if we're not the topmost visible widget — the line
--- editor's live-preview path uses a synthesized regions table that
--- includes the in-progress draft, and a tick that read straight from
--- stored settings would trample that draft.
+-- Both paths gate on whether any *active* region template actually uses
+-- a token from the relevant set. If your status line is e.g. just
+-- `%title`, the minute heartbeat correctly stays silent — saves e-ink
+-- ghost-refreshes and Lua wakeups.
+--
+-- The timer's callback is stored on self so UIManager:unschedule can
+-- pull it out of the queue cleanly when the widget is closed or pushed
+-- to the background by ReaderUI; not just bail on next fire (which
+-- still costs a per-minute wakeup during a long read).
 
-function BookshelfWidget:_startStatusTimer()
-    if self._status_timer_active then return end
-    self._status_timer_active = true
-    self:_scheduleNextStatusTick()
+-- Tokens whose displayed value drifts with time alone — caught by the
+-- minute heartbeat. Battery percent is here because the icon glyph
+-- changes via Charging/NotCharging events but the numeric % only drifts
+-- as time passes.
+local TIMER_TOKENS = {
+    "time", "time_12h", "time_24h",
+    "date", "date_long", "date_numeric", "weekday", "weekday_short",
+    "book_time_left", "book_read_time", "days_reading_book",
+    "pages_per_day", "speed", "batt",
+}
+local FRONTLIGHT_TOKENS = { "light", "light_icon", "warmth" }
+local BATTERY_TOKENS    = { "batt", "batt_icon" }
+local WIFI_TOKENS       = { "wifi", "wifi_icon" }
+local NIGHTMODE_TOKENS  = { "nightmode" }
+
+-- Returns true iff any non-disabled region's template references a
+-- token from `tokens`. Pattern matches "%name" + a non-identifier
+-- boundary so "%light" doesn't accidentally fire on "%light_icon"
+-- (the boundary check makes that a separate match the caller can
+-- target precisely if needed).
+function BookshelfWidget:_anyActiveRegionUses(tokens)
+    local Regions = require("hero_regions")
+    local resolved = Regions.read()
+    for _, key in ipairs(Regions.ORDER) do
+        local r = resolved[key]
+        if r and not r.disabled and type(r.template) == "string" then
+            for _, name in ipairs(tokens) do
+                -- "%name" followed by anything that isn't [A-Za-z0-9_]
+                -- (or end-of-string). %% in a Lua pattern matches a
+                -- literal %.
+                if r.template:find("%%" .. name .. "[^%w_]")
+                        or r.template:match("%%" .. name .. "$") then
+                    return true
+                end
+            end
+        end
+    end
+    return false
 end
 
-function BookshelfWidget:_stopStatusTimer()
-    self._status_timer_active = false
-end
-
-function BookshelfWidget:_scheduleNextStatusTick()
-    if not self._status_timer_active then return end
-    -- Align to the next minute boundary so visible clock changes happen
-    -- at the same instant the system clock ticks. now.sec is 0-60 (60 = leap).
-    local now_sec = os.date("*t").sec
-    local delay = 60 - now_sec
-    if delay <= 0 then delay = 60 end
-    UIManager:scheduleIn(delay, function() self:_statusTick() end)
-end
-
-function BookshelfWidget:_statusTick()
-    if not self._status_timer_active then return end
-    -- Skip if something's overlaying us (line editor, FM menu, dialog).
-    -- The next minute-tick will catch up once they close.
-    if UIManager:getTopmostVisibleWidget() == self
-            and self._hero_parent
-            and self._hero_parent[1]
-            and self._hero_parent[1].replaceRightColumn then
+-- Repaint the right column iff any active region uses one of `tokens`.
+-- Skipped silently when bookshelf is not the topmost visible widget
+-- (line editor open, FM menu open, ReaderUI on top during a read).
+-- Optional debounce coalesces rapid event bursts (slider drags).
+function BookshelfWidget:_gatedRepaint(tokens, debounce)
+    local function fire()
+        self._gated_repaint_pending = nil
+        if UIManager:getTopmostVisibleWidget() ~= self then return end
+        if not (self._hero_parent and self._hero_parent[1]
+                and self._hero_parent[1].replaceRightColumn) then return end
+        if not self:_anyActiveRegionUses(tokens) then return end
         local Regions = require("hero_regions")
         self:_swapHeroRightColumnInPlace(Regions.read())
     end
-    self:_scheduleNextStatusTick()
+    if debounce and debounce > 0 then
+        if self._gated_repaint_pending then
+            UIManager:unschedule(self._gated_repaint_pending)
+        end
+        self._gated_repaint_pending = fire
+        UIManager:scheduleIn(debounce, fire)
+    else
+        UIManager:nextTick(fire)
+    end
 end
 
--- Sleep / wake hooks: pause the timer so we don't fire while the device
--- is asleep, and re-arm on wake so the post-resume repaint reflects the
--- current time / battery / wifi state. UIManager broadcasts these
--- events to widgets in the window stack.
+function BookshelfWidget:_startStatusTimer()
+    if self._status_timer_func then return end -- already armed
+    self._status_timer_func = function()
+        -- Fire only if active templates actually need a time-driven repaint.
+        self:_gatedRepaint(TIMER_TOKENS)
+        -- Re-arm at the next minute boundary.
+        if self._status_timer_func then
+            local now_sec = os.date("*t").sec
+            local delay = 60 - now_sec
+            if delay <= 0 then delay = 60 end
+            UIManager:scheduleIn(delay, self._status_timer_func)
+        end
+    end
+    -- First tick aligns to the next minute boundary too.
+    local now_sec = os.date("*t").sec
+    local delay = 60 - now_sec
+    if delay <= 0 then delay = 60 end
+    UIManager:scheduleIn(delay, self._status_timer_func)
+end
+
+function BookshelfWidget:_stopStatusTimer()
+    if self._status_timer_func then
+        UIManager:unschedule(self._status_timer_func)
+        self._status_timer_func = nil
+    end
+    if self._gated_repaint_pending then
+        UIManager:unschedule(self._gated_repaint_pending)
+        self._gated_repaint_pending = nil
+    end
+end
+
+-- ─── Event hooks for non-time state changes ────────────────────────────────
+-- KOReader broadcasts these via UIManager:broadcastEvent — they reach
+-- widgets in the window stack including covered ones. We still gate on
+-- the topmost check inside _gatedRepaint so a battery state change
+-- during a read doesn't try to paint over the reader.
+
+function BookshelfWidget:onFrontlightStateChanged()
+    self:_gatedRepaint(FRONTLIGHT_TOKENS, 0.3)
+end
+function BookshelfWidget:onCharging()
+    self:_gatedRepaint(BATTERY_TOKENS, 0.3)
+end
+function BookshelfWidget:onNotCharging()
+    self:_gatedRepaint(BATTERY_TOKENS, 0.3)
+end
+function BookshelfWidget:onNetworkConnected()
+    self:_gatedRepaint(WIFI_TOKENS, 0.3)
+end
+function BookshelfWidget:onNetworkDisconnected()
+    self:_gatedRepaint(WIFI_TOKENS, 0.3)
+end
+
+-- Sleep / wake hooks: stop the timer entirely on suspend so the device
+-- can sleep cleanly with no pending callbacks; re-arm + immediate tick
+-- on wake so visible state catches up without the user waiting up to
+-- a full minute.
 function BookshelfWidget:onSuspend()
     self:_stopStatusTimer()
 end
 
 function BookshelfWidget:onResume()
     self:_startStatusTimer()
-    -- Fire an immediate tick so the clock / batt / wifi tokens reflect
-    -- post-wake state without the user waiting up to a full minute.
+    -- Repaint immediately so post-wake clock + batt + wifi state shows
+    -- without waiting for the next minute boundary. We pass an empty
+    -- table to _gatedRepaint to bypass the gate — wake-time state
+    -- catch-up should always paint regardless of token usage.
     if UIManager:getTopmostVisibleWidget() == self
             and self._hero_parent
             and self._hero_parent[1]

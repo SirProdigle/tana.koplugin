@@ -267,6 +267,11 @@ function Bookshelf:show()
         -- Already on the stack (probably underneath the Reader). Refresh data
         -- and request a repaint so freshly-closed books surface in Recent etc.
         self._widget:_rebuild()
+        -- _openBook stopped the status timer when the reader took over;
+        -- restart it now that bookshelf is the foreground again.
+        if self._widget._startStatusTimer then
+            self._widget:_startStatusTimer()
+        end
         UIManager:setDirty(self._widget, "ui")
         return
     end
