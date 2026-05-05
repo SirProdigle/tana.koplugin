@@ -1226,7 +1226,11 @@ function BookshelfWidget:_openBookMenu(item)
                   end) },
                 { text = fav_label,
                   callback = closing(function()
-                    -- Toggle favourite status.
+                    -- Toggle favourite status. KOReader API quirk: removeItem
+                    -- writes the collections file to disk automatically;
+                    -- addItem only updates in-memory state and relies on a
+                    -- caller-side :write() to persist. Without the explicit
+                    -- write, additions are lost on the next KOReader restart.
                     local ok, already = pcall(function()
                         return ReadCollection:isFileInCollection(book.filepath, "favorites")
                     end)
@@ -1234,6 +1238,7 @@ function BookshelfWidget:_openBookMenu(item)
                         ReadCollection:removeItem(book.filepath, "favorites")
                     else
                         ReadCollection:addItem(book.filepath, "favorites")
+                        ReadCollection:write({ favorites = true })
                     end
                     bw:_rebuild()
                     UIManager:setDirty(bw, "ui")
