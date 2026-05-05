@@ -426,15 +426,20 @@ function SpineWidget:_renderCover(bb)
         radius      = CARD_RADIUS,
         border_size = border,
     }
-    if not self.is_selected then
+    if self.is_selected then
+        -- The corner mask normally paints bg-white pixels in the
+        -- (0..R, 0..R) corner squares for points OUTSIDE the radius-R
+        -- arc, to fake rounded corners on top of a rectangular image.
+        -- With the BorderOverlay backdrop those bg-white pixels poke
+        -- out into the black ring as four little white teeth. Invert
+        -- the mask colour to match the backdrop so the corner squares
+        -- merge seamlessly with the surrounding black.
+        cover_args.bg_color = Blitbuffer.COLOR_BLACK
+    else
         -- The card sits at (0, 0) in the OverlapGroup; the shadow paints
         -- at (SHADOW_OFFSET, SHADOW_OFFSET) with the same w/h and same
         -- radius. Pass these so the corner mask can restore shadow grey
-        -- where the shadow would otherwise show through. When selected
-        -- the BorderOverlay sits BEHIND the cover and the cover's normal
-        -- bg-white corner mask paints over it (intended — the visible
-        -- ring is only the BorderOverlay's solid fill outside the cover's
-        -- bbox).
+        -- where the shadow would otherwise show through.
         cover_args.shadow_color    = SHADOW_GRAY
         cover_args.shadow_offset_x = SHADOW_OFFSET
         cover_args.shadow_offset_y = SHADOW_OFFSET
