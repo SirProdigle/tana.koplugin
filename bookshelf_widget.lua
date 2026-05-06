@@ -620,6 +620,74 @@ function BookshelfWidget:_kickOffMissingMetaExtraction(items, slot_w, slot_h)
             pcall(function() BIM:extractInBackground(files) end)
         end)
     end
+    self:_armExtractionPoll(files)
+end
+
+-- _armExtractionPoll(files): start a polling loop that watches BIM for
+-- the queued filepaths and refreshes the shelf when their metadata
+-- appears. Polls every BIM_POLL_INTERVAL_S seconds for up to
+-- BIM_POLL_MAX_ATTEMPTS attempts (≈ 60s) — the typical extraction
+-- subprocess completes well within that window. Cancels any earlier
+-- polling timer so consecutive renders don't stack timers.
+local BIM_POLL_INTERVAL_S  = 3
+local BIM_POLL_MAX_ATTEMPTS = 20
+function BookshelfWidget:_armExtractionPoll(pending_files)
+    if self._bim_poll_fn then
+        UIManager:unschedule(self._bim_poll_fn)
+        self._bim_poll_fn = nil
+    end
+    if not pending_files or #pending_files == 0 then
+        self._bim_poll_files = nil
+        return
+    end
+    self._bim_poll_files    = pending_files
+    self._bim_poll_attempts = 0
+    self:_scheduleExtractionPoll()
+end
+
+function BookshelfWidget:_scheduleExtractionPoll()
+    if not self._bim_poll_files then return end
+    if self._bim_poll_attempts >= BIM_POLL_MAX_ATTEMPTS then
+        self._bim_poll_files = nil
+        return
+    end
+    self._bim_poll_attempts = self._bim_poll_attempts + 1
+    self._bim_poll_fn = function() self:_pollExtraction() end
+    UIManager:scheduleIn(BIM_POLL_INTERVAL_S, self._bim_poll_fn)
+end
+
+function BookshelfWidget:_pollExtraction()
+    self._bim_poll_fn = nil
+    local files = self._bim_poll_files
+    if not files or #files == 0 then return end
+    local ok, BIM = pcall(require, "bookinfomanager")
+    if not ok or not BIM or not BIM.getBookInfo then
+        self._bim_poll_files = nil
+        return
+    end
+    local max_tries = BIM.max_extract_tries or 3
+    local any_new       = false
+    local still_pending = {}
+    for _, f in ipairs(files) do
+        local info = BIM:getBookInfo(f.filepath, false)
+        if info and info.has_meta == "Y" then
+            any_new = true
+        elseif info and (tonumber(info.in_progress) or 0) >= max_tries then
+            -- BIM gave up on this file; stop watching it.
+        else
+            still_pending[#still_pending + 1] = f
+        end
+    end
+    self._bim_poll_files = #still_pending > 0 and still_pending or nil
+    if any_new and self._inner_vgroup and self._shelf_dims then
+        -- _swapShelvesInPlace re-fetches Book records (which re-query
+        -- BIM) and re-arms polling for whatever is still missing.
+        self:_swapShelvesInPlace()
+        return
+    end
+    if self._bim_poll_files then
+        self:_scheduleExtractionPoll()
+    end
 end
 
 -- ─── Data helpers ─────────────────────────────────────────────────────────────
@@ -1178,6 +1246,14 @@ function BookshelfWidget:_startStatusTimer()
 end
 
 function BookshelfWidget:_stopStatusTimer()
+    -- Same hook also cancels the BIM-extraction poll — no point watching
+    -- BIM while the reader is foregrounded; Bookshelf:show will re-arm
+    -- everything on the next render.
+    if self._bim_poll_fn then
+        UIManager:unschedule(self._bim_poll_fn)
+        self._bim_poll_fn    = nil
+        self._bim_poll_files = nil
+    end
     if self._status_timer_func then
         UIManager:unschedule(self._status_timer_func)
         self._status_timer_func = nil
