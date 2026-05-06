@@ -54,13 +54,38 @@ local SpineWidget    = require("spine_widget")
 local SLOPE_LEFT_FRAC  = 0.67
 local SLOPE_RIGHT_FRAC = 0.73
 
--- Cardboard colour and a darker outline. Slightly denser than the
--- earlier values so the magazine reads as a solid object on the page
--- now that the drop shadow has been removed (see init below for the
--- composition; shadow was making the shape look 1-D rather than 3-D).
-local CARDBOARD       = Blitbuffer.gray(0.30)
-local CARDBOARD_EDGE  = Blitbuffer.gray(0.65)
+-- Cardboard colour and a darker outline. Dispatched on Screen:isColorEnabled
+-- so colour devices (Kaleido panels, SDL desktop) get a real manilla cardboard
+-- hue rather than reading the grey through their RGB filter as a desaturated
+-- mush. On B&W e-ink the manilla degrades to grey via the ColorRGB→Color8
+-- coercion; we set the grayscale value directly so dithering stays predictable
+-- and we don't pay the colour-coerce cost on every paint.
+-- Lightened from the previous gray(0.30) — user wanted the magazine to read
+-- as cardboard rather than a dark slab when sitting next to bright covers.
+local CARDBOARD, CARDBOARD_EDGE
+if Screen.isColorEnabled and Screen:isColorEnabled() then
+    -- Manilla cardboard. Edge is a deeper tan so the outline reads as a
+    -- shadow-side fold rather than a separate stroke colour.
+    CARDBOARD      = Blitbuffer.colorFromString("#e7c9a9")
+    CARDBOARD_EDGE = Blitbuffer.colorFromString("#b8946b")
+else
+    CARDBOARD      = Blitbuffer.gray(0.20)
+    CARDBOARD_EDGE = Blitbuffer.gray(0.55)
+end
 local PAGE_BG         = Blitbuffer.COLOR_WHITE
+
+-- Drop-shadow geometry — must match SpineWidget so book and magazine spines
+-- on the same shelf cast shadows the same depth. The previous folder render
+-- skipped the shadow (the comment cited it making the shape look 1-D); user
+-- now wants it back to align with the book-cover treatment.
+local SHADOW_OFFSET   = Screen:scaleBySize(4)
+local SHADOW_GRAY     = Blitbuffer.gray(0.5)
+
+-- Border thickness — matches SpineWidget's CARD_BORDER (Screen:scaleBySize(1))
+-- so book covers and magazine outlines on the same shelf have visually
+-- equivalent stroke weight. Size.border.thin (the previous value) is a
+-- non-scaled 1px and was visibly thinner than the books on hidpi displays.
+local CARD_BORDER     = Screen:scaleBySize(1)
 
 -- Bottom-corner rounding (matches SpineWidget's CARD_RADIUS so adjacent
 -- magazine and book spines on the same shelf have consistent corner
@@ -148,7 +173,7 @@ function MagazinePolygon:paintTo(bb, x, y)
         end
     end
     if self.edge_color then
-        local b    = Size.border.thin
+        local b    = CARD_BORDER
         local edge = self.edge_color
         bb:paintRect(x + r, y + h - b, w - 2 * r, b, edge)            -- bottom
         -- Side edges start where the slope MEETS each side, not at
@@ -196,14 +221,10 @@ local FolderStack = InputContainer:extend{
 
 function FolderStack:init()
     self.dimen = Geom:new{ w = self.width, h = self.height }
-    -- No drop shadow on folders — the previous shadow read as "flat
-    -- shape with shadow" rather than "3D file on the page". A darker
-    -- cardboard fill plus the perimeter outline carry the solidity
-    -- without extra layering. Folder fills the full slot (book covers
-    -- still leave SHADOW_OFFSET space for their own shadows; the
-    -- folder doesn't need that allocation).
-    local card_w = self.width
-    local card_h = self.height
+    -- Reserve SHADOW_OFFSET pixels at right and bottom for the drop shadow
+    -- (matches SpineWidget's allocation so books and magazines line up).
+    local card_w = self.width  - SHADOW_OFFSET
+    local card_h = self.height - SHADOW_OFFSET
 
     -- Slope endpoints in card-local coordinates.
     local y_left  = math.floor(card_h * SLOPE_LEFT_FRAC)
@@ -299,8 +320,30 @@ function FolderStack:init()
         label_widget,
     }
 
+    -- Drop shadow: a magazine-shaped silhouette painted at SHADOW_OFFSET
+    -- down+right of the card. We render it as the same MagazinePolygon
+    -- shape (not a plain rect) so the shadow follows the slope rather
+    -- than peeking out as a rectangular halo above the cardboard's open
+    -- mouth — the book's own SpineWidget shadow handles the upper region.
+    local shadow_polygon = MagazinePolygon:new{
+        width      = card_w,
+        height     = card_h,
+        y_left     = y_left,
+        y_right    = y_right,
+        fill_color = SHADOW_GRAY,
+        radius     = CARD_RADIUS,
+    }
+    local shadow_positioned = FrameContainer:new{
+        bordersize   = 0,
+        padding      = 0,
+        padding_top  = SHADOW_OFFSET,
+        padding_left = SHADOW_OFFSET,
+        shadow_polygon,
+    }
+
     self[1] = OverlapGroup:new{
         dimen = self.dimen,
+        shadow_positioned,     -- 0: drop shadow (back-most)
         book_positioned,       -- 1: book cover, inset within card
         magazine,              -- 2: cardboard front (covers book bottom)
         label_positioned,      -- 3: folder name centred on cardboard
