@@ -38,7 +38,16 @@ local ALIGN_LABELS = {
 -- text_func button shows the live value, and dialog:reinit() rebuilds
 -- the row so the value updates after every nudge — ButtonDialog has no
 -- public setTitle, so the title stays static.
-local function showSizeNudge(current, default, on_change, on_close)
+local function showSizeNudge(current, default, on_change, on_close, opts)
+    -- opts (optional): { min, max, step_small, step_big, unit, title }
+    -- Defaults match the original font-size nudge call site.
+    opts = opts or {}
+    local min        = opts.min or 8
+    local max        = opts.max or 48
+    local step_small = opts.step_small or 1
+    local step_big   = opts.step_big or 5
+    local unit       = opts.unit or " px"
+    local title      = opts.title or _("Font size")
     local ButtonDialog = require("ui/widget/buttondialog")
     local d
     -- After reinit, dirty-mark the dialog so the e-ink panel refreshes
@@ -52,20 +61,20 @@ local function showSizeNudge(current, default, on_change, on_close)
         end
     end
     local function nudge(delta)
-        current = math.max(8, math.min(48, current + delta))
+        current = math.max(min, math.min(max, current + delta))
         on_change(current)
         refresh_dialog()
     end
     d = ButtonDialog:new{
-        title = _("Font size"),
+        title = title,
         buttons = {
             {
-                { text = "-5", callback = function() nudge(-5) end },
-                { text = "-1", callback = function() nudge(-1) end },
-                { text_func = function() return tostring(current) .. " px" end,
+                { text = "-" .. tostring(step_big),   callback = function() nudge(-step_big)   end },
+                { text = "-" .. tostring(step_small), callback = function() nudge(-step_small) end },
+                { text_func = function() return tostring(current) .. unit end,
                   enabled = false },
-                { text = "+1", callback = function() nudge(1)  end },
-                { text = "+5", callback = function() nudge(5)  end },
+                { text = "+" .. tostring(step_small), callback = function() nudge(step_small)  end },
+                { text = "+" .. tostring(step_big),   callback = function() nudge(step_big)    end },
             },
             {
                 { text = _("Default"), callback = function()
@@ -357,16 +366,21 @@ function LineEditor.show(region_key, bw, settings_module, touchmenu_instance)
                 {
                     text_func = function()
                         if not hasBarToken(dialog) then return _("Bar height") end
-                        return _("Height: ") .. (draft.bar_height or _("auto"))
+                        return _("Height: ") .. tostring(draft.bar_height or 100) .. "%"
                     end,
                     enabled_func = function() return hasBarToken(dialog) end,
                     callback = function()
                         if dialog then dialog:onCloseKeyboard() end
+                        -- Percentage of the rendered text height. 100% = bar
+                        -- matches the text exactly. Range 30-200% covers
+                        -- "thin underline" through "double-height block".
                         showSizeNudge(
-                            draft.bar_height or 14,
-                            14,
+                            draft.bar_height or 100,
+                            100,
                             function(val) draft.bar_height = val; applyLivePreview() end,
-                            function() if dialog then dialog:reinit() end end)
+                            function() if dialog then dialog:reinit() end end,
+                            { min = 30, max = 200, step_small = 5, step_big = 20,
+                              unit = "%", title = _("Bar height") })
                     end,
                 },
             }

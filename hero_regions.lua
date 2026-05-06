@@ -52,7 +52,7 @@ Regions.DEFAULTS = {
         bold       = true,
         uppercase  = false,
         alignment  = "left",
-        bar_height = nil,         -- nil = match font ascent
+        bar_height = nil,         -- percentage of rendered text height; nil = 100% (match)
         bar_style  = "bordered",
     },
 }
