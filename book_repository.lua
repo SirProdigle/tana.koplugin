@@ -950,7 +950,7 @@ function Repo.getTags(limit)
             end
         end
     end
-    table.sort(groups, function(a, b) return a.latest > b.latest end)
+    table.sort(groups, _groupShapeCmp(Repo.getSortKey("tags")))
     if limit and #groups > limit then
         for i = limit + 1, #groups do groups[i] = nil end
     end
