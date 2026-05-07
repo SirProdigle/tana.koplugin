@@ -405,6 +405,7 @@ function LineEditor.show(region_key, bw, settings_module, touchmenu_instance)
             {
                 text     = _("Tokens\xE2\x80\xA6"),
                 callback = function()
+                    if dialog then dialog:onCloseKeyboard() end
                     if settings_module and settings_module._pickToken then
                         settings_module:_pickToken(dialog)
                     end
