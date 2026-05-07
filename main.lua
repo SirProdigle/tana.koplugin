@@ -621,6 +621,45 @@ function Bookshelf:editDevBranch(touchmenu_instance)
     dlg:onShowKeyboard()
 end
 
+-- Open a single-line dialog to set / change / clear the GitHub PAT used for
+-- authenticated downloads from the private repo.
+function Bookshelf:editGitHubToken(touchmenu_instance)
+    local InputDialog = require("ui/widget/inputdialog")
+    local dlg
+    dlg = InputDialog:new{
+        title      = _("GitHub access token"),
+        input      = G_reader_settings:readSetting("bookshelf_github_pat") or "",
+        input_hint = _("Personal access token (leave empty to clear)"),
+        buttons = {{
+            {
+                text     = _("Cancel"),
+                id       = "close",
+                callback = function() UIManager:close(dlg) end,
+            },
+            {
+                text             = _("Save"),
+                is_enter_default = true,
+                callback         = function()
+                    local raw     = dlg:getInputText() or ""
+                    local trimmed = raw:gsub("^%s+", ""):gsub("%s+$", "")
+                    if trimmed == "" then
+                        G_reader_settings:delSetting("bookshelf_github_pat")
+                    else
+                        G_reader_settings:saveSetting("bookshelf_github_pat", trimmed)
+                    end
+                    G_reader_settings:flush()
+                    UIManager:close(dlg)
+                    if touchmenu_instance and touchmenu_instance.updateItems then
+                        touchmenu_instance:updateItems()
+                    end
+                end,
+            },
+        }},
+    }
+    UIManager:show(dlg)
+    dlg:onShowKeyboard()
+end
+
 -- Clear dev branch + install latest stable release. Used when escaping a
 -- broken branch back to a known-good release.
 function Bookshelf:resetToStableRelease()

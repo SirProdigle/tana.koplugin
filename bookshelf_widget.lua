@@ -201,6 +201,24 @@ function BookshelfWidget:handleEvent(event)
         -- would never fire while Bookshelf is up.
         local fm = require("apps/filemanager/filemanager").instance
         local ev = event.args[1]
+        -- Absorb taps that land in the pagination footer's blank areas
+        -- (HorizontalSpan gaps, CenterContainer side margins) without
+        -- hitting a button. Without this, they fall through to FM's touch
+        -- zones and activate third-party plugins (e.g. SimpleUI's bottom
+        -- navbar) registered there. Corner exclusion: a tap in the bottom-
+        -- left / bottom-right corner must still reach FM so gestures.koplugin
+        -- corner actions (night mode, etc.) continue to fire. The 1/7 ratio
+        -- mirrors KOReader's own corner-zone sizing in gestures.koplugin.
+        if ev.ges == "tap" and self._pagination_footer
+                and self._pagination_footer.dimen
+                and self._pagination_footer.dimen:contains(ev.pos) then
+            local corner = math.floor(math.min(self.width, self.height) / 7)
+            local in_h_edge = ev.pos.x < corner or ev.pos.x > self.width - corner
+            local in_v_edge = ev.pos.y < corner or ev.pos.y > self.height - corner
+            if not (in_h_edge and in_v_edge) then
+                return true
+            end
+        end
         local zone_lists = {}
         if fm and fm._ordered_touch_zones then
             zone_lists[#zone_lists + 1] = fm._ordered_touch_zones
@@ -689,6 +707,7 @@ function BookshelfWidget:_rebuild()
     logger.dbg(string.format("[bookshelf perf] _rebuild: shelves=%.0fms",
         (_perf_t3 - _perf_t2) * 1000))
     local label_widget = self:_buildPaginationFooter(content_w, label_h, total_pages)
+    self._pagination_footer = label_widget
 
     -- Kick off BIM extraction for any displayed books with no cached
     -- metadata. Cover-spec dims = single shelf slot.
@@ -1319,6 +1338,7 @@ function BookshelfWidget:_swapShelvesInPlace()
     logger.dbg(string.format("[bookshelf perf] _swapShelves: shelves=%.0fms",
         (_perf_t2 - _perf_t1) * 1000))
     local footer = self:_buildPaginationFooter(d.content_w, d.label_h, total_pages)
+    self._pagination_footer = footer
 
     -- Kick off BIM extraction for newly-paginated books that aren't
     -- cached yet. Same slot + hero dims as _rebuild's call so both

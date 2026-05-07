@@ -563,6 +563,19 @@ function Settings:_updateSubItems()
             sub_item_table = {
                 {
                     text_func = function()
+                        local pat = G_reader_settings:readSetting("bookshelf_github_pat")
+                        if pat and pat ~= "" then
+                            return _("GitHub access token: set")
+                        end
+                        return _("GitHub access token: not set")
+                    end,
+                    keep_menu_open = true,
+                    callback = function(touchmenu_instance)
+                        if plugin then plugin:editGitHubToken(touchmenu_instance) end
+                    end,
+                },
+                {
+                    text_func = function()
                         local b = (plugin and plugin.dev_branch) or ""
                         if b == "" then return _("Development branch") end
                         return _("Development branch") .. ": " .. b
