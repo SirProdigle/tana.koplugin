@@ -1013,12 +1013,41 @@ function BookshelfWidget:_fetchChipItems(n)
     -- on the shelf path), and reusing them would dereference freed
     -- memory and SEGV.
     local tip = self._drilldown_path[#self._drilldown_path]
-    -- Drill into a group (series / author / genre / tag): payload.books
-    -- already carries Book records, but their cover_bbs may have been
-    -- freed by a prior render. Rebuild meta-only from filepath to refresh.
+    -- Search mode: emit ordered tiles (folders -> authors -> series -> genres -> books).
+    if tip and tip.kind == "search" then
+        local ds = G_reader_settings:readSetting("bookshelf_chips_disabled")
+                   or { latest = true, authors = true, genres = true, tags = true }
+        local fresh = {}
+        if not ds["all"] then
+            for _, f in ipairs(tip.payload.folders or {}) do
+                fresh[#fresh + 1] = f
+            end
+        end
+        if not ds["authors"] then
+            for _, g in ipairs(tip.payload.authors or {}) do
+                fresh[#fresh + 1] = g
+            end
+        end
+        if not ds["series"] then
+            for _, g in ipairs(tip.payload.series or {}) do
+                fresh[#fresh + 1] = g
+            end
+        end
+        if not ds["genres"] then
+            for _, g in ipairs(tip.payload.genres or {}) do
+                fresh[#fresh + 1] = g
+            end
+        end
+        for _, b in ipairs(tip.payload.books or {}) do
+            local nb = b.filepath and Repo.buildBookMeta(b.filepath) or b
+            fresh[#fresh + 1] = nb
+        end
+        return fresh
+    end
+    -- Drill into a group (series / author / genre / tag): rebuild from filepaths
+    -- so cover_bbs are fresh (image_disposable frees them after each render).
     if tip and (tip.kind == "series" or tip.kind == "author"
-            or tip.kind == "genre" or tip.kind == "tag"
-            or tip.kind == "search") then
+            or tip.kind == "genre" or tip.kind == "tag") then
         local fresh = {}
         for _, b in ipairs(tip.payload.books) do
             local nb = b.filepath and Repo.buildBookMeta(b.filepath) or b
@@ -2173,7 +2202,7 @@ function BookshelfWidget:_openSearchDialog(prefill)
 end
 
 function BookshelfWidget:_searchAndDrill(query)
-    local books = Repo.searchBooks(query, 200) or {}
+    local results = Repo.searchAll(query)
     -- Search is its own top-level mode rather than a nested drill under
     -- the active chip. Stash whatever drilldown the user was in so the
     -- back-out path restores it (a folder browse + search-then-back
@@ -2197,7 +2226,14 @@ function BookshelfWidget:_searchAndDrill(query)
     self:_drillInto{
         kind            = "search",
         label           = query,
-        payload         = { query = query, books = books },
+        payload         = {
+            query   = query,
+            folders = results.folders,
+            authors = results.authors,
+            series  = results.series,
+            genres  = results.genres,
+            books   = results.books,
+        },
         prior_drilldown = prior_path,
     }
 end
