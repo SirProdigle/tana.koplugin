@@ -625,5 +625,222 @@ test("getLatest: respects bookshelf_sort_latest=title", function()
 end)
 
 -- ============================================================================
+-- home_dir hardening: refuse to walk filesystem root or unset home_dir.
+-- Reproduces the Reddit Kobo crash where tapping Home tab drove getAll
+-- into "/" and the recursive walk OOM-killed KOReader.
+-- ============================================================================
+
+test("getAll: returns empty when home_dir is nil", function()
+    Repo.invalidateWalkCache()
+    _G._test_settings = { home_dir = nil }
+    local dir_called = false
+    package.loaded["libs/libkoreader-lfs"].dir = function(_path)
+        dir_called = true
+        return function() return nil end
+    end
+    local items, total = Repo.getAll()
+    assert(items and #items == 0, "expected empty items")
+    assert(total == 0, "expected total=0")
+    assert(not dir_called, "lfs.dir must not be called when home_dir is nil")
+end)
+
+test("getAll: returns empty when home_dir is empty string", function()
+    Repo.invalidateWalkCache()
+    _G._test_settings = { home_dir = "" }
+    local dir_called = false
+    package.loaded["libs/libkoreader-lfs"].dir = function(_path)
+        dir_called = true
+        return function() return nil end
+    end
+    local items, total = Repo.getAll()
+    assert(items and #items == 0)
+    assert(total == 0)
+    assert(not dir_called, "lfs.dir must not be called for empty home_dir")
+end)
+
+test("getAll: walks \"/\" but skips pseudo-filesystem subtrees", function()
+    Repo.invalidateWalkCache()
+    _G._test_settings = { home_dir = "/" }
+    -- Track which top-level dirs the walk actually opens. A naive walk
+    -- would call lfs.dir on /proc, /sys, /dev — the denylist must block
+    -- those, while letting real dirs (mnt, home, etc.) through.
+    local opened = {}
+    package.loaded["libs/libkoreader-lfs"].dir = function(p)
+        opened[p] = true
+        local listings = {
+            ["/"]      = { ".", "..", "proc", "sys", "dev", "run", "tmp",
+                           "lost+found", "mnt", "home" },
+            ["/mnt"]   = { ".", "..", "book.epub" },
+            ["/home"]  = { ".", "..", "novel.epub" },
+        }
+        local files = listings[p] or {}
+        local i = 0
+        return function() i = i + 1; return files[i] end
+    end
+    package.loaded["libs/libkoreader-lfs"].attributes = function(fp, key)
+        local modes = {
+            ["/proc"]        = "directory", ["/sys"]  = "directory",
+            ["/dev"]         = "directory", ["/run"]  = "directory",
+            ["/tmp"]         = "directory", ["/lost+found"] = "directory",
+            ["/mnt"]         = "directory", ["/home"] = "directory",
+            ["/mnt/book.epub"]   = "file",
+            ["/home/novel.epub"] = "file",
+        }
+        if key == "mode"         then return modes[fp] end
+        if key == "size"         then return 100 end
+        if key == "modification" then return 0 end
+        if not key then
+            if modes[fp] then return { mode = modes[fp], size = 100, modification = 0 } end
+        end
+    end
+    _G._test_bim_data = {
+        ["/mnt/book.epub"]   = { title = "MountBook" },
+        ["/home/novel.epub"] = { title = "HomeNovel" },
+    }
+    local items = Repo.getAll(nil, 10, 0)
+    assert(items, "getAll returned nil")
+    -- Pseudo-fs dirs must not be opened anywhere in the walk.
+    assert(not opened["/proc"], "denylist breach: /proc was walked")
+    assert(not opened["/sys"], "denylist breach: /sys was walked")
+    assert(not opened["/dev"], "denylist breach: /dev was walked")
+    assert(not opened["/run"], "denylist breach: /run was walked")
+    assert(not opened["/tmp"], "denylist breach: /tmp was walked")
+    assert(not opened["/lost+found"], "denylist breach: /lost+found was walked")
+end)
+
+test("getAll: explicit drilldown path bypasses home_dir guard", function()
+    Repo.invalidateWalkCache()
+    _G._test_settings = { home_dir = nil }  -- bogus home_dir
+    package.loaded["libs/libkoreader-lfs"].dir = function(path)
+        local files = (path == "/explicit") and { ".", "..", "x.epub" } or {}
+        local i = 0
+        return function() i = i + 1; return files[i] end
+    end
+    package.loaded["libs/libkoreader-lfs"].attributes = function(_fp, key)
+        if key == "mode" then return "file" end
+        if key == "size" then return 100 end
+        if key == "modification" then return 0 end
+        return { mode = "file", size = 100, modification = 0 }
+    end
+    _G._test_bim_data = { ["/explicit/x.epub"] = { title = "X" } }
+    local items = Repo.getAll("/explicit", 10, 0)
+    assert(items and #items == 1, "expected 1 item, got " .. tostring(items and #items))
+    assert(items[1].title == "X")
+end)
+
+test("getLatest: unset home_dir falls back to / and walks safely (denylist active)", function()
+    Repo.invalidateWalkCache()
+    -- home_dir nil → getLatest's `or "/"` fallback fires → walkBooks
+    -- walks "/" with SYSTEM_DIR_NAMES filtering. The user-visible result
+    -- is whatever real subtrees exist under "/" without /proc /sys etc.
+    _G._test_settings = { home_dir = nil, bookshelf_latest_walk_depth = 2 }
+    local opened = {}
+    package.loaded["libs/libkoreader-lfs"].dir = function(p)
+        opened[p] = true
+        local listings = {
+            ["/"]    = { ".", "..", "proc", "sys", "dev" },  -- no real subdirs
+        }
+        local files = listings[p] or {}
+        local i = 0
+        return function() i = i + 1; return files[i] end
+    end
+    package.loaded["libs/libkoreader-lfs"].attributes = function(fp, key)
+        if key == "mode" and (fp == "/proc" or fp == "/sys" or fp == "/dev") then
+            return "directory"
+        end
+        if key == "modification" then return 0 end
+    end
+    local out = Repo.getLatest(5)
+    assert(out and #out == 0, "expected no books (only pseudo-fs at root)")
+    assert(opened["/"], "walk should still open / (denylist filters children, not root)")
+    assert(not opened["/proc"], "denylist breach: /proc opened")
+    assert(not opened["/sys"], "denylist breach: /sys opened")
+    assert(not opened["/dev"], "denylist breach: /dev opened")
+end)
+
+test("getLatest: walks \"/\" but never descends into /proc /sys /dev", function()
+    Repo.invalidateWalkCache()
+    _G._test_settings = { home_dir = "/", bookshelf_latest_walk_depth = 3 }
+    local opened = {}
+    package.loaded["libs/libkoreader-lfs"].dir = function(p)
+        opened[p] = true
+        local listings = {
+            ["/"]     = { ".", "..", "proc", "sys", "dev", "run", "mnt" },
+            ["/mnt"]  = { ".", "..", "found.epub" },
+            -- proc/sys/dev/run intentionally omitted: if the denylist is
+            -- breached, lfs.dir(<denied>) will be called and listings[p]
+            -- returns nil → the iterator yields nothing, but `opened`
+            -- still records the breach.
+        }
+        local files = listings[p] or {}
+        local i = 0
+        return function() i = i + 1; return files[i] end
+    end
+    package.loaded["libs/libkoreader-lfs"].attributes = function(fp, key)
+        local modes = {
+            ["/proc"] = "directory", ["/sys"] = "directory",
+            ["/dev"]  = "directory", ["/run"] = "directory",
+            ["/mnt"]  = "directory",
+            ["/mnt/found.epub"] = "file",
+        }
+        if key == "mode"         then return modes[fp] end
+        if key == "modification" then return 100 end
+    end
+    _G._test_bim_data = { ["/mnt/found.epub"] = { title = "Found" } }
+    local out = Repo.getLatest(5)
+    -- The real book under /mnt should surface; pseudo-fs roots stay unopened.
+    assert(out and #out == 1, "expected 1 book under /mnt, got " .. tostring(out and #out))
+    assert(out[1].title == "Found")
+    assert(not opened["/proc"], "walkBooks descended into /proc despite denylist")
+    assert(not opened["/sys"], "walkBooks descended into /sys despite denylist")
+    assert(not opened["/dev"], "walkBooks descended into /dev despite denylist")
+    assert(not opened["/run"], "walkBooks descended into /run despite denylist")
+end)
+
+-- ============================================================================
+-- buildBookMeta hardening: a single throwing book must not kill the page
+-- ============================================================================
+
+test("getAll: a buildBookMeta failure on one entry doesn't kill the page", function()
+    Repo.invalidateWalkCache()
+    _G._test_settings = { home_dir = "/lib" }
+    package.loaded["libs/libkoreader-lfs"].dir = function(path)
+        local files = (path == "/lib")
+            and { ".", "..", "good.epub", "bad.epub", "also_good.epub" }
+            or {}
+        local i = 0
+        return function() i = i + 1; return files[i] end
+    end
+    package.loaded["libs/libkoreader-lfs"].attributes = function(_fp, key)
+        if key == "mode" then return "file" end
+        if key == "size" then return 100 end
+        if key == "modification" then return 0 end
+        return { mode = "file", size = 100, modification = 0 }
+    end
+    -- Make BIM throw for /lib/bad.epub but return data for the other two.
+    package.loaded["bookinfomanager"] = {
+        getBookInfo = function(_self, fp, _with_cover)
+            if fp == "/lib/bad.epub" then error("simulated parser blow-up on " .. fp) end
+            local data = {
+                ["/lib/good.epub"]      = { title = "Good" },
+                ["/lib/also_good.epub"] = { title = "Also Good" },
+            }
+            return data[fp]
+        end,
+    }
+    local items, total = Repo.getAll(nil, 10, 0)
+    -- All three were sortable (filesystem-only), but the bad one drops out
+    -- of the hydrate. Total reflects shapes on disk; items reflects survivors.
+    assert(total == 3, "expected 3 shapes, got " .. tostring(total))
+    assert(items and #items == 2, "expected 2 surviving items, got " .. tostring(items and #items))
+    -- Restore the default BIM stub so other tests are unaffected.
+    package.loaded["bookinfomanager"] = {
+        getBookInfo = function(_self, fp, _with_cover)
+            return _G._test_bim_data and _G._test_bim_data[fp] or nil
+        end,
+    }
+end)
+
+-- ============================================================================
 io.write(string.format("\n%d passed, %d failed\n", pass, fail))
 os.exit(fail == 0 and 0 or 1)

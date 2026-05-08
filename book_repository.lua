@@ -51,6 +51,60 @@ local function getCollections()  return require("readcollection") end
 local function getBookInfoMgr()  return require("bookinfomanager") end
 local function getDocSettings()  return require("docsettings") end
 
+-- Resolve the user's library root from G_reader_settings. Returns the
+-- configured home_dir, or nil when it is unset / empty. "/" is allowed:
+-- some users (rooted devices, manual layouts) legitimately point home_dir
+-- at filesystem root. The pseudo-filesystem denylist below keeps walks
+-- under "/" off /proc and /sys so the legitimate case doesn't OOM-kill
+-- KOReader. Walk-based callers must still treat nil as "no library
+-- configured" and short-circuit to an empty result.
+local function _resolveLibraryRoot()
+    local home = G_reader_settings:readSetting("home_dir")
+    if not home or home == "" then return nil end
+    return home
+end
+
+-- Path-join that doesn't emit "//child" when parent is filesystem root.
+-- Walks rooted at "/" (legitimate config on rooted devices) would otherwise
+-- produce "//proc", "//mnt", etc. — Linux normalises those at the syscall
+-- layer but our walk-cache keys, BIM lookups, and equality comparisons
+-- don't, so internal state ends up double-slashed and inconsistent.
+local function _joinPath(parent, child)
+    if parent == "/" then return "/" .. child end
+    return parent .. "/" .. child
+end
+
+-- Basename denylist: directory names that walks must never descend into.
+-- These are Linux pseudo-filesystems (/proc, /sys, /dev, /run) plus
+-- transient OS scratch (/tmp) and fsck artefacts (lost+found). All have
+-- enormous breadth at depth 1-2 and contain zero books, so even a depth-
+-- bounded walk turns into thousands of stat() calls and stalls the UI.
+-- Match is on basename so it bites whether home_dir is "/" or a parent
+-- happens to contain a same-named folder. False-positive risk: a user
+-- library folder literally named "proc" / "tmp" etc. would be hidden.
+-- That's not a book-collection convention so the trade is acceptable.
+local SYSTEM_DIR_NAMES = {
+    proc        = true,
+    sys         = true,
+    dev         = true,
+    run         = true,
+    tmp         = true,
+    ["lost+found"] = true,
+}
+
+-- pcall wrapper around Repo.buildBookMeta. A single malformed file's
+-- metadata extraction (parser blow-up, corrupt BIM row, unexpected
+-- charset) must not kill the entire shelf rebuild — Recent dodges this
+-- because its book set is restricted to ones the user has successfully
+-- opened, but Home iterates every file under home_dir and so is exposed.
+-- Returns the book on success; nil + warn on failure.
+local function _safeBuildBookMeta(fp)
+    local ok, b = pcall(Repo.buildBookMeta, fp)
+    if ok then return b end
+    logger.warn("[bookshelf] buildBookMeta failed for", fp, ":", b)
+    return nil
+end
+
 -- ─── Calibre metadata.calibre loader ─────────────────────────────────────────
 -- Calibre desktop, when syncing books to a device, drops a JSON file
 -- ("metadata.calibre" or ".metadata.calibre") at the library root with
@@ -87,7 +141,7 @@ local function _calibreMetadataFor(filepath)
     local lfs  = require("libs/libkoreader-lfs")
     local meta_path
     for _, name in ipairs({ "metadata.calibre", ".metadata.calibre" }) do
-        local p = home .. "/" .. name
+        local p = _joinPath(home, name)
         if lfs.attributes(p, "mode") == "file" then
             meta_path = p
             break
@@ -450,6 +504,13 @@ end
 local function walkBooks(root, depth, out, current_depth)
     current_depth = current_depth or 0
     if current_depth > depth then return end
+    -- Refuse to walk an unset/empty root. "/" is permitted (some users set
+    -- home_dir to root deliberately) — SYSTEM_DIR_NAMES below filters out
+    -- the pseudo-filesystems that would otherwise OOM the walk.
+    if current_depth == 0 and (not root or root == "") then
+        logger.warn("[bookshelf] walkBooks: home_dir not configured; skipping walk")
+        return
+    end
     local ok_lfs, lfs = pcall(require, "libs/libkoreader-lfs")
     if not ok_lfs or not lfs or not lfs.dir then return end
 
@@ -461,8 +522,8 @@ local function walkBooks(root, depth, out, current_depth)
     if not ok or type(iter) ~= "function" then return end
 
     for entry in iter, dir_obj do
-        if entry ~= "." and entry ~= ".." then
-            local fp   = root .. "/" .. entry
+        if entry ~= "." and entry ~= ".." and not SYSTEM_DIR_NAMES[entry] then
+            local fp   = _joinPath(root, entry)
             local mode = lfs.attributes(fp, "mode")
             if mode == "directory" then
                 walkBooks(fp, depth, out, current_depth + 1)
@@ -567,19 +628,19 @@ function Repo.findFirstBookIn(path, max_depth)
     -- Pass 1: files at this level. Use SUPPORTED_EXT directly rather
     -- than FileChooser:show_file so we don't need a FileChooser self.
     for _, f in ipairs(entries) do
-        local fp = path .. "/" .. f
+        local fp = _joinPath(path, f)
         local attr = lfs.attributes(fp)
         if attr and attr.mode == "file" then
             local ext = f:match("%.([^.]+)$")
             if ext and SUPPORTED_EXT[ext:lower()] then
-                local b = Repo.buildBookMeta(fp)
+                local b = _safeBuildBookMeta(fp)
                 if b then return b end
             end
         end
     end
     -- Pass 2: descend into subdirs (depth-limited)
     for _, f in ipairs(entries) do
-        local fp = path .. "/" .. f
+        local fp = _joinPath(path, f)
         local attr = lfs.attributes(fp)
         if attr and attr.mode == "directory" then
             local found = Repo.findFirstBookIn(fp, max_depth - 1)
@@ -670,7 +731,16 @@ end
 function Repo.getAll(path, limit, offset)
     local _t0 = _gettime()
     offset = offset or 0
-    path = path or G_reader_settings:readSetting("home_dir") or "/"
+    -- Explicit `path` (folder drilldown) wins; fallback resolves the
+    -- user's library root and bails when it's unconfigured rather than
+    -- walking "/".
+    if not path then
+        path = _resolveLibraryRoot()
+        if not path then
+            logger.warn("[bookshelf] getAll: home_dir not configured; refusing to walk")
+            return {}, 0
+        end
+    end
     local sort_key = Repo.getSortKey("all")
     local reverse  = G_reader_settings:readSetting("bookshelf_sort_all_reverse") == true
     local mixed    = G_reader_settings:readSetting("bookshelf_sort_all_mixed") == true
@@ -688,7 +758,7 @@ function Repo.getAll(path, limit, offset)
         for i = offset + 1, stop do
             local shape = entry.shapes[i]
             if shape.kind == "folder" then
-                local fb = shape.first_book_fp and Repo.buildBookMeta(shape.first_book_fp)
+                local fb = shape.first_book_fp and _safeBuildBookMeta(shape.first_book_fp)
                 out[#out + 1] = {
                     kind       = "folder",
                     path       = shape.path,
@@ -696,7 +766,7 @@ function Repo.getAll(path, limit, offset)
                     first_book = fb,
                 }
             else
-                local b = Repo.buildBookMeta(shape.fp)
+                local b = _safeBuildBookMeta(shape.fp)
                 if b then out[#out + 1] = b end
             end
         end
@@ -721,10 +791,14 @@ function Repo.getAll(path, limit, offset)
     end
 
     -- Gather entries with full attributes in one lfs call per entry.
+    -- SYSTEM_DIR_NAMES filter keeps a `home_dir = "/"` setup off /proc,
+    -- /sys, /dev so the user-visible folder list and per-folder
+    -- findFirstBookIn calls stay sane.
     local entries = {}
     for entry in iter, dir_obj do
-        if entry ~= "." and entry ~= ".." and entry:sub(1, 1) ~= "." then
-            local fp   = path .. "/" .. entry
+        if entry ~= "." and entry ~= ".." and entry:sub(1, 1) ~= "."
+                and not SYSTEM_DIR_NAMES[entry] then
+            local fp   = _joinPath(path, entry)
             local attr = lfs.attributes(fp)
             if attr and entry:sub(-4) ~= ".sdr" then
                 entries[#entries + 1] = { name = entry, fp = fp, attr = attr }
@@ -745,8 +819,18 @@ function Repo.getAll(path, limit, offset)
         local bim = getBookInfoMgr()
         for _, e in ipairs(entries) do
             if e.attr.mode == "file" then
-                local info = bim:getBookInfo(e.fp, true) or {}
-                e.doc_props = { display_title = info.title or e.name }
+                -- pcall: a single corrupt BIM row must not abort the
+                -- whole prefetch sweep — fall back to filename for the
+                -- failing entry and keep going.
+                local ok, info = pcall(bim.getBookInfo, bim, e.fp, true)
+                if ok and info then
+                    e.doc_props = { display_title = info.title or e.name }
+                else
+                    if not ok then
+                        logger.warn("[bookshelf] getBookInfo failed for", e.fp, ":", info)
+                    end
+                    e.doc_props = { display_title = e.name }
+                end
             else
                 e.doc_props = { display_title = e.name }
             end
@@ -766,8 +850,15 @@ function Repo.getAll(path, limit, offset)
         local DocSettings = require("docsettings")
         for _, e in ipairs(entries) do
             if e.attr.mode == "file" then
-                local ds = DocSettings:open(e.fp)
-                e._pct = ds:readSetting("percent_finished")
+                -- pcall: a corrupt .sdr sidecar must not abort the prefetch.
+                -- A nil _pct sorts as "never opened" — same as a brand-new file.
+                local ok, ds = pcall(DocSettings.open, DocSettings, e.fp)
+                if ok and ds then
+                    local ok_pct, pct = pcall(ds.readSetting, ds, "percent_finished")
+                    if ok_pct then e._pct = pct end
+                else
+                    logger.warn("[bookshelf] DocSettings:open failed for", e.fp, ":", ds)
+                end
                 -- no ds:close() — DocSettings doesn't expose one; GC handles it
             end
         end
@@ -827,7 +918,7 @@ function Repo.getAll(path, limit, offset)
     for i = offset + 1, stop do
         local shape = shapes[i]
         if shape.kind == "folder" then
-            local fb = shape.first_book_fp and Repo.buildBookMeta(shape.first_book_fp)
+            local fb = shape.first_book_fp and _safeBuildBookMeta(shape.first_book_fp)
             out[#out + 1] = {
                 kind       = "folder",
                 path       = shape.path,
@@ -835,7 +926,7 @@ function Repo.getAll(path, limit, offset)
                 first_book = fb,
             }
         else
-            local b = Repo.buildBookMeta(shape.fp)
+            local b = _safeBuildBookMeta(shape.fp)
             if b then out[#out + 1] = b end
         end
     end
