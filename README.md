@@ -45,6 +45,30 @@ The chip list itself can be customised: **FileManager menu → Bookshelf → Edi
 
 ---
 
+## Gestures
+
+| Gesture | Where | What it does |
+|---------|-------|--------------|
+| **Tap** | Shelf cover (2-row mode) | Preview the book in the hero card |
+| **Tap** | Shelf cover (3-row mode) | Open the book directly in the Reader |
+| **Tap** | Hero card | Open the previewed book in the Reader |
+| **Tap** | Compact strip (3-row mode) | Restore the full hero (back to 2-row) |
+| **Tap** | Chip | Switch shelf (Recent / Latest / Series / …) |
+| **Tap** | Currently-reading chip (📖) | Drop any preview, restore hero to the lastfile (also collapses 3-row → 2-row) |
+| **Tap** | "Page X of Y" footer | Open the per-chip sort menu |
+| **Tap** | Chevron buttons in footer | First / previous / next / last page |
+| **Long-press** | Shelf cover | Open the per-book menu (Show info, Add to favourites, Go to author / series / genre, Remove from history) |
+| **Swipe west (←)** | Hero card | Cycle preview to the next book in the active chip |
+| **Swipe west (←)** | Anywhere else | Next page; on the last page, switches to the next chip |
+| **Swipe east (→)** | Hero card | Cycle preview to the previous book |
+| **Swipe east (→)** | Anywhere else | Previous page; on page 1, drills back out of folder/series, or switches to the previous chip |
+| **Swipe north (↑)** | Anywhere | Collapse hero to a thin status strip, expand the grid from 2 rows to 3 (more books on screen) |
+| **Swipe south (↓)** | Anywhere | Restore the full hero, back to 2-row grid |
+
+In 3-row mode the visible top two rows are preserved across the toggle — if you're on page 4 in 2-row, you stay on page 4 in 3-row, with the new third row appearing below the same eight covers. Page numbers may shift slightly on toggle (the totals differ because each mode shows a different number of books per page).
+
+---
+
 ## Hero card editor
 
 Five regions of the hero card are user-editable token templates with per-region styling. Open **FileManager menu → Bookshelf → Edit hero card** for a drill-down submenu showing all five regions with a live preview snippet:
