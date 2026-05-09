@@ -50,22 +50,15 @@ function CardboardTextBox:paintTo(bb, x, y)
     end
     local w = self._bb:getWidth()
     local h = self._bb:getHeight()
-    -- Composite into an intermediate BB8 buffer so that addblitFrom
-    -- operates on two buffers of the same type (→ C path, no format
-    -- mismatch). The final blitFrom copies to the target and handles
-    -- any format conversion there. Routing addblitFrom through the Lua
-    -- generic fallback (triggered when target bb is not BB8) crashes on
-    -- some builds because the generic path tries arithmetic on a pixel
-    -- struct rather than a plain number.
-    local tmp = Blitbuffer.new(w, h, Blitbuffer.TYPE_BB8)
-    tmp:paintRectRGB32(0, 0, w, h, CARDBOARD)
-    tmp:invertRect(0, 0, w, h)
+    -- addblitFrom on this KOReader build takes an explicit intensity
+    -- parameter (0.0–1.0); omitting it leaves intensity=nil and crashes
+    -- at `intensity * 0xFF`. Pass 1.0 for full-strength saturating add.
+    bb:paintRectRGB32(x, y, w, h, CARDBOARD)
+    bb:invertRect(x, y, w, h)
     self._bb:invertRect(0, 0, w, h)
-    tmp:addblitFrom(self._bb, 0, 0, 0, 0, w, h)
+    bb:addblitFrom(self._bb, x, y, 0, 0, w, h, 1.0)
     self._bb:invertRect(0, 0, w, h)
-    tmp:invertRect(0, 0, w, h)
-    bb:blitFrom(tmp, x, y, 0, 0, w, h)
-    tmp:free()
+    bb:invertRect(x, y, w, h)
 end
 
 local FolderCard = {}
