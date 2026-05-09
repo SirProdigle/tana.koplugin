@@ -43,7 +43,7 @@ local function splitGenreTags(src)
     local t = {}
     local inputs = type(src) == "table" and src or { src }
     for _, s in ipairs(inputs) do
-        for part in s:gmatch("[^,;|/]+") do
+        for part in s:gmatch("[^,;|/\n]+") do
             local trimmed = part:match("^%s*(.-)%s*$")
             if trimmed and trimmed ~= "" then t[#t + 1] = trimmed end
         end
