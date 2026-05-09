@@ -64,7 +64,7 @@ end
 --                                 border. Typically the previewed book.
 -- }
 function ShelfRow.new(opts)
-    local n_slots = 4
+    local n_slots = opts.n_slots or 4
     -- Generous gap between covers so the shelf doesn't read as cramped.
     -- Size.padding.fullscreen × 2 ≈ 30dp at native scaling.
     local gap     = opts.gap or Size.padding.fullscreen * 2

@@ -1499,10 +1499,12 @@ function BookshelfWidget:_buildShelfRows(items, content_w, shelf_h, PAD, n_rows)
     -- expanded mode auto-restores the full hero AND stages the tapped
     -- book as the preview — single tap collapses-back-and-shows-it. In
     -- normal mode it's the existing _previewBook (preview-only) behaviour.
+    local n_cols   = self:_nCols()
     local row_opts = {
         width             = content_w,
         height            = shelf_h,
         gap               = PAD,
+        n_slots           = n_cols,
         selected_filepath = selected_filepath,
         show_titles       = self._expanded,
         -- Expanded mode is "browse to open" — single tap opens the book.
@@ -1530,7 +1532,7 @@ function BookshelfWidget:_buildShelfRows(items, content_w, shelf_h, PAD, n_rows)
     local rows = {}
     for r = 1, n_rows do
         local row_items = {}
-        for i = 1, 4 do row_items[i] = items[(r - 1) * 4 + i] end
+        for i = 1, n_cols do row_items[i] = items[(r - 1) * n_cols + i] end
         row_opts.items = row_items
         rows[r] = ShelfRow.new(row_opts)
     end
