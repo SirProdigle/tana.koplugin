@@ -253,25 +253,18 @@ function FolderCard.build(opts)
         face                          = face,
         bold                          = true,
         fgcolor                       = Blitbuffer.COLOR_BLACK,
+        bgcolor                       = CARDBOARD,
         width                         = label_w_avail,
         alignment                     = "left",
         height                        = label_h,
         height_overflow_show_ellipsis = not fits,
-    }
-    -- TextBoxWidget.bgcolor is not honoured on all KOReader builds; wrap in
-    -- a FrameContainer whose `background` is guaranteed to paint CARDBOARD.
-    local label_bg = FrameContainer:new{
-        bordersize = 0,
-        padding    = 0,
-        background = CARDBOARD,
-        label_widget,
     }
     local label_positioned = FrameContainer:new{
         bordersize   = 0,
         padding      = 0,
         padding_top  = v_offset + tab_h + label_pad,
         padding_left = label_pad,
-        label_bg,
+        label_widget,
     }
 
     return folder_positioned, label_positioned

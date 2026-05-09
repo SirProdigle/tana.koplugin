@@ -394,22 +394,44 @@ function ChipStrip:_initChips()
         -- Chips always render black-on-paper; InvertedFrame pixel-flips the
         -- active chip so the inversion is a blitbuffer primitive (avoids
         -- TextWidget fgcolor, which some Kindle builds do not honour).
-        -- bordersize=0: a thick border caused a white ring artifact on KT6
-        -- because the FrameContainer border pixels weren't fully covered by
-        -- invertRect on that build. Pending feedback uses a grey background
-        -- instead of a hollow ring — avoids the border entirely.
-        local chip_bg = (is_pending and not is_active) and Blitbuffer.gray(0.75) or paper
+        -- bordersize=0 on the InvertedFrame: a thick border baked into the
+        -- FrameContainer caused a white ring on KT6 after invertRect because
+        -- those border pixels weren't covered by the inversion. Pending
+        -- feedback is painted as a SEPARATE overlay OverlapGroup child so
+        -- the border ring is never part of what gets inverted.
         local chip_body = InvertedFrame:new{
             _invert    = is_active,
             bordersize = 0,
             margin     = 0,
             padding    = 0,
-            background = chip_bg,
+            background = paper,
             CenterContainer:new{
                 dimen = Geom:new{ w = w, h = self.height },
                 cell_content,
             },
         }
+        -- Build the chip slot: start with chip_body, then layer pending ring
+        -- and/or the action pointer on top via OverlapGroup.
+        -- Pending ring: a FrameContainer with thick black border and NO
+        -- background (nil = transparent interior) overlaid after chip_body so
+        -- it is never inverted. Active action chips skip flashPending so
+        -- is_pending and is_active are never both true.
+        local chip_slot = chip_body
+        if is_pending then
+            local pb = Size.border.thick
+            local ring = FrameContainer:new{
+                bordersize = pb,
+                color      = Blitbuffer.COLOR_BLACK,
+                margin     = 0,
+                padding    = 0,
+                Widget:new{ dimen = Geom:new{ w = w - 2*pb, h = self.height - 2*pb } },
+            }
+            chip_slot = OverlapGroup:new{
+                dimen = Geom:new{ w = w, h = self.height },
+                chip_body,
+                ring,
+            }
+        end
         if chip.action and is_active then
             -- Selected action chip points up at the hero cover above.
             -- Full chip-width base, ~25% strip-height tall — a "roof"
@@ -428,14 +450,13 @@ function ChipStrip:_initChips()
             -- painted over the pointer's lowest row — both are black, so
             -- the triangle silhouette continues smoothly across the line.
             pointer.overlap_offset = { 0, -pointer_h }
-            row[#row + 1] = OverlapGroup:new{
+            chip_slot = OverlapGroup:new{
                 dimen = Geom:new{ w = w, h = self.height },
-                chip_body,
+                chip_slot,
                 pointer,
             }
-        else
-            row[#row + 1] = chip_body
         end
+        row[#row + 1] = chip_slot
         local prev = self._chip_dimens[self.chips[i - 1] and self.chips[i - 1].key]
         local x = prev and (prev.x + prev.w + separator_w) or 0
         self._chip_dimens[chip.key] = { x = x, w = w }
