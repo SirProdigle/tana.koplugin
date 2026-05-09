@@ -1061,6 +1061,27 @@ function Repo.searchBooks(query, limit)
     return out
 end
 
+-- Comparator for series/author/genre/tag group records. Works on either a
+-- cached SHAPE (with .filepaths) or a freshly-built group (with .books) —
+-- so the same comparator can sort _series_cache entries at HIT time and
+-- in-memory groups at MISS time without a second helper.
+local function _groupShapeCmp(key)
+    if key == "name" then
+        return function(a, b)
+            return (a.series_name or ""):lower() < (b.series_name or ""):lower()
+        end
+    elseif key == "book_count" then
+        return function(a, b)
+            local na = a.filepaths and #a.filepaths or (a.books and #a.books or 0)
+            local nb = b.filepaths and #b.filepaths or (b.books and #b.books or 0)
+            if na ~= nb then return na > nb end
+            return (a.series_name or ""):lower() < (b.series_name or ""):lower()
+        end
+    end
+    -- latest_read (default): most recent first.
+    return function(a, b) return (a.latest or 0) > (b.latest or 0) end
+end
+
 function Repo.getTags(limit)
     local rc = getCollections()
     if not rc.coll then return {} end
@@ -1114,27 +1135,6 @@ end
 -- of a series"). Caching the shape (filepath list + sort metadata) and
 -- rebuilding Books on read keeps the cover_bb lifetime safe while still
 -- skipping the lfs walk + the sort/group pass.
--- Comparator for series/author/genre/tag group records. Works on either a
--- cached SHAPE (with .filepaths) or a freshly-built group (with .books) —
--- so the same comparator can sort _series_cache entries at HIT time and
--- in-memory groups at MISS time without a second helper.
-local function _groupShapeCmp(key)
-    if key == "name" then
-        return function(a, b)
-            return (a.series_name or ""):lower() < (b.series_name or ""):lower()
-        end
-    elseif key == "book_count" then
-        return function(a, b)
-            local na = a.filepaths and #a.filepaths or (a.books and #a.books or 0)
-            local nb = b.filepaths and #b.filepaths or (b.books and #b.books or 0)
-            if na ~= nb then return na > nb end
-            return (a.series_name or ""):lower() < (b.series_name or ""):lower()
-        end
-    end
-    -- latest_read (default): most recent first.
-    return function(a, b) return (a.latest or 0) > (b.latest or 0) end
-end
-
 local function hydrateSeriesShape(shape)
     local books = {}
     for i, fp in ipairs(shape.filepaths) do
