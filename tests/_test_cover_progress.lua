@@ -48,6 +48,7 @@ package.preload["ffi/blitbuffer"] = function()
         Color8       = function(n) return { _kind = "Color8", v = n } end,
         ColorRGB32   = function(r,g,b,a) return { _kind = "ColorRGB32", r=r, g=g, b=b, a=a } end,
         COLOR_WHITE  = { _kind = "Color8", v = 0xFF },
+        COLOR_BLACK  = { _kind = "Color8", v = 0x00 },
     }
 end
 package.preload["ui/widget/overlapgroup"] = function()

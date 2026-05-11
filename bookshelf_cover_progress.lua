@@ -64,8 +64,9 @@ end
 -- Widget: ProgressBarWidget
 -- ---------------------------------------------------------------------------
 
-local Widget = require("ui/widget/widget")
-local Geom   = require("ui/geometry")
+local Widget        = require("ui/widget/widget")
+local Geom          = require("ui/geometry")
+local _BlitbufferBar = require("ffi/blitbuffer")
 
 local ProgressBarWidget = Widget:extend{
     width  = 0,
@@ -80,16 +81,24 @@ function ProgressBarWidget:init()
 end
 
 function ProgressBarWidget:paintTo(bb, x, y)
+    -- Top border: a 1px dark line matching the card's own border, so
+    -- the bar reads as visually continuous with the cover frame
+    -- (otherwise the 1dp gutter between image and bar leaks card
+    -- background through and looks 'transparent' against the shadow).
+    bb:paintRect(x, y, self.width, 1, _BlitbufferBar.COLOR_BLACK)
+    local body_y = y + 1
+    local body_h = self.height - 1
+    if body_h < 1 then return end
     local clamped = self.pct
     if clamped < 0 then clamped = 0 end
     if clamped > 1 then clamped = 1 end
     local fill_w  = math.floor(self.width * clamped + 0.5)
     local track_w = self.width - fill_w
     if fill_w > 0 then
-        bb:paintRect(x, y, fill_w, self.height, self.fill)
+        bb:paintRect(x, body_y, fill_w, body_h, self.fill)
     end
     if track_w > 0 then
-        bb:paintRect(x + fill_w, y, track_w, self.height, self.track)
+        bb:paintRect(x + fill_w, body_y, track_w, body_h, self.track)
     end
 end
 
@@ -171,7 +180,9 @@ local Colour   = require("bookshelf_colour")
 local Device   = require("device")
 
 local DEFAULT_FILL  = { grey = 0x40 }
-local DEFAULT_TRACK = { grey = 0xBF }
+-- Track defaults to pure white so the bar stays clearly distinct from
+-- the cover's drop shadow (mid-grey) on monochrome devices.
+local DEFAULT_TRACK = { grey = 0xFF }
 
 -- Returns colour values resolved to Blitbuffer objects for the current
 -- screen mode. Called per cover paint; relies on bookshelf_colour's
