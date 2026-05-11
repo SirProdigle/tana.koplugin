@@ -58,6 +58,16 @@ local function _barHeight()
     return Screen:scaleBySize(6)
 end
 
+-- How far below the card's bottom-inside-border the bar is shifted.
+-- Positive values let the bar extend down into the shadow zone so it
+-- reads as 'page edges between the front cover and the back cover'
+-- rather than as a stripe-on-the-cover. SHADOW_OFFSET is the size of
+-- the shadow zone (4dp); offsetting half that pushes the bar's bottom
+-- ~2dp into the shadow and leaves ~2dp of shadow remaining below.
+local function _barShadowShift()
+    return Screen:scaleBySize(3)
+end
+
 -- A simple Widget subclass that paints a rounded rectangle in a fixed grey.
 -- Used as the shadow layer behind every cover. Has its own dimen so
 -- OverlapGroup positioning containers can size it correctly.
@@ -382,7 +392,10 @@ function SpineWidget:_renderShadowedCard(inner)
         end
     end
 
-    -- 5. Progress bar (IN FRONT, BOTTOM-inside-border)
+    -- 5. Progress bar (IN FRONT, BOTTOM-inside-border, shifted into shadow)
+    --    The bar is shifted DOWN by _barShadowShift() so part of it extends
+    --    into the shadow zone -- reads as 'page edges between front cover
+    --    and back cover' rather than a stripe glued to the cover.
     if indicators.bar then
         local colours = CoverProgress.resolvedColours()
         local bar_h = _barHeight()
@@ -392,7 +405,7 @@ function SpineWidget:_renderShadowedCard(inner)
         children[#children + 1] = FrameContainer:new{
             bordersize   = 0,
             padding      = 0,
-            padding_top  = card_h - CARD_BORDER - bar_h,
+            padding_top  = card_h - CARD_BORDER - bar_h + _barShadowShift(),
             padding_left = CARD_BORDER,
             bar,
         }
@@ -432,15 +445,21 @@ function SpineWidget:_renderCover(bb)
     local img_h = card_h - 2 * border
 
     -- When the bar will be drawn at the BOTTOM of the card, shorten the
-    -- image so its bottom edge isn't obscured. The shrink is bar_h + 1dp
-    -- (a 1dp gutter between image and bar). Bottom-shifting via
-    -- FrameContainer padding_bottom keeps the image anchored to the top.
+    -- image so its bottom edge isn't obscured. With the bar shifted down
+    -- into the shadow zone by _barShadowShift(), the portion of the bar
+    -- INSIDE the card is (bar_h - shift), so that's what we need to free
+    -- up. No extra gutter: the bar's dark top border acts as the visual
+    -- separator between image and bar.
     local bar_h = 0
     if self.show_progress then
         local _i = CoverProgress.decide(self.book)
         if _i.bar then bar_h = _barHeight() end
     end
-    local img_bottom_inset = bar_h > 0 and (bar_h + Screen:scaleBySize(1)) or 0
+    local img_bottom_inset = 0
+    if bar_h > 0 then
+        img_bottom_inset = bar_h - _barShadowShift()
+        if img_bottom_inset < 0 then img_bottom_inset = 0 end
+    end
     img_h = img_h - img_bottom_inset
 
     local bb_w  = bb:getWidth()

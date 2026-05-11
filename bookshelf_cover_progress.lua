@@ -64,9 +64,10 @@ end
 -- Widget: ProgressBarWidget
 -- ---------------------------------------------------------------------------
 
-local Widget        = require("ui/widget/widget")
-local Geom          = require("ui/geometry")
+local Widget         = require("ui/widget/widget")
+local Geom           = require("ui/geometry")
 local _BlitbufferBar = require("ffi/blitbuffer")
+local _ScreenBar     = require("device").screen
 
 local ProgressBarWidget = Widget:extend{
     width  = 0,
@@ -81,13 +82,14 @@ function ProgressBarWidget:init()
 end
 
 function ProgressBarWidget:paintTo(bb, x, y)
-    -- Top border: a 1px dark line matching the card's own border, so
-    -- the bar reads as visually continuous with the cover frame
-    -- (otherwise the 1dp gutter between image and bar leaks card
-    -- background through and looks 'transparent' against the shadow).
-    bb:paintRect(x, y, self.width, 1, _BlitbufferBar.COLOR_BLACK)
-    local body_y = y + 1
-    local body_h = self.height - 1
+    -- Top border: a scaled-1dp dark line matching the card's own border
+    -- thickness, so the bar reads as visually continuous with the cover
+    -- frame. Using raw 1px here was invisible on the PW5 (~264 DPI);
+    -- scaleBySize(1) returns ~2 raw px on that device.
+    local border_h = math.max(1, _ScreenBar:scaleBySize(1))
+    bb:paintRect(x, y, self.width, border_h, _BlitbufferBar.COLOR_BLACK)
+    local body_y = y + border_h
+    local body_h = self.height - border_h
     if body_h < 1 then return end
     local clamped = self.pct
     if clamped < 0 then clamped = 0 end
