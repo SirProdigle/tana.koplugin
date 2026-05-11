@@ -130,10 +130,20 @@ function Bookshelf:_registerStartWithMenu()
         -- to take effect until next launch).
         for _i, entry in ipairs(result.sub_item_table) do
             local orig_cb = entry.callback
-            entry.callback = function(...)
-                if orig_cb then orig_cb(...) end
+            entry.callback = function(touchmenu_instance, ...)
+                if orig_cb then orig_cb(touchmenu_instance, ...) end
                 if _live_widget and UIManager:isWidgetShown(_live_widget) then
                     UIManager:close(_live_widget)
+                    -- Close the start_with menu too: the user just
+                    -- chose a different home and expects to land on
+                    -- it immediately. TouchMenu's default
+                    -- post-callback path for radio items calls
+                    -- updateItems() (to repaint the checkmark) rather
+                    -- than closing, so without this the menu lingers
+                    -- on top of the now-hidden bookshelf.
+                    if touchmenu_instance and touchmenu_instance.closeMenu then
+                        touchmenu_instance:closeMenu()
+                    end
                 end
             end
         end
@@ -252,11 +262,19 @@ function Bookshelf:addToMainMenu(menu_items)
         text_func = function()
             return outer:_isShowing() and _("Close Bookshelf") or _("Open Bookshelf")
         end,
-        callback = function()
+        callback = function(touchmenu_instance)
             if outer:_isShowing() then
                 UIManager:close(_live_widget)
             else
                 outer:show()
+            end
+            -- Always close the menu after the toggle so the user lands
+            -- on the new state (bookshelf or FM) without a lingering
+            -- menu in front of them. TouchMenu's default close path
+            -- typically does this for items without checked_func, but
+            -- making it explicit avoids relying on that default.
+            if touchmenu_instance and touchmenu_instance.closeMenu then
+                touchmenu_instance:closeMenu()
             end
         end,
         separator = true,
