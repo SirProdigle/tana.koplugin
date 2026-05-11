@@ -589,6 +589,99 @@ function Settings:_progressIndicatorsSubItems()
     }
 end
 
+--- @param extra_button table|nil  Optional shortcut button rendered between
+---   Default and Apply, shape `{ text = string, value = number }`. When tapped,
+---   the dialog sets `value` to the supplied number, fires on_change, then
+---   closes -- matching the one-tap-commit feel of the colour picker's White
+---   shortcut on the greyscale nudge for background_color.
+function Settings:showNudgeDialog(title, value, min_val, max_val, default_val, unit, on_change, on_close, small_step, large_step, touchmenu_instance, on_default, default_label, extra_button)
+    local ButtonDialog = require("ui/widget/buttondialog")
+    local restoreMenu = self._plugin:hideMenu(touchmenu_instance)
+    local orig_on_close = on_close
+    on_close = function()
+        restoreMenu()
+        if orig_on_close then orig_on_close() end
+    end
+    local dialog
+    local original_value = value
+    small_step = small_step or 1
+    if large_step == nil then large_step = 10 end
+
+    local function update(delta)
+        value = math.max(min_val, math.min(max_val, value + delta))
+        on_change(value)
+        dialog:reinit()
+    end
+
+    local nudge_buttons = {}
+    if large_step then
+        table.insert(nudge_buttons, { text = "-" .. large_step, callback = function() update(-large_step) end })
+    end
+    table.insert(nudge_buttons, { text = "-" .. small_step, callback = function() update(-small_step) end })
+    table.insert(nudge_buttons, { text_func = function() return tostring(value) .. unit end, enabled = false })
+    table.insert(nudge_buttons, { text = "+" .. small_step, callback = function() update(small_step) end })
+    if large_step then
+        table.insert(nudge_buttons, { text = "+" .. large_step, callback = function() update(large_step) end })
+    end
+
+    dialog = ButtonDialog:new{
+        dismissable = false,
+        title = title .. ": " .. value .. unit,
+        tap_close_callback = function()
+            if value ~= original_value then
+                value = original_value
+                on_change(value)
+            end
+            if on_close then on_close() end
+        end,
+        buttons = (function()
+            local footer = {
+                {
+                    text = _("Cancel"),
+                    callback = function()
+                        if value ~= original_value then
+                            value = original_value
+                            on_change(value)
+                        end
+                        UIManager:close(dialog)
+                        if on_close then on_close() end
+                    end,
+                },
+                { text = default_label or (_("Default") .. " " .. default_val .. unit), callback = function()
+                    if on_default then
+                        on_default()
+                        UIManager:close(dialog)
+                        if on_close then on_close() end
+                    else
+                        value = default_val; on_change(value); dialog:reinit()
+                    end
+                end },
+            }
+            if extra_button then
+                table.insert(footer, {
+                    text = extra_button.text,
+                    callback = function()
+                        value = extra_button.value
+                        on_change(value)
+                        UIManager:close(dialog)
+                        if on_close then on_close() end
+                    end,
+                })
+            end
+            table.insert(footer, {
+                text = _("Apply"),
+                is_enter_default = true,
+                callback = function()
+                    UIManager:close(dialog)
+                    if on_close then on_close() end
+                end,
+            })
+            return { nudge_buttons, footer }
+        end)(),
+    }
+    UIManager:show(dialog)
+end
+
 -- Bookends-style nudge dialog for the hero font scale. Each tap on -/+ saves
 -- the new scale, kicks the live BookshelfWidget rebuild, and refreshes the
 -- dialog so the value updates. Cancel reverts to the snapshot taken on open;
