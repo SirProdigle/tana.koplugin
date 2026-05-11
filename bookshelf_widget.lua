@@ -287,6 +287,47 @@ local function _resolveDisabledSet()
            or _DEFAULT_CHIPS_DISABLED
 end
 
+-- Remove a deleted filepath from any drilldown payload that captured it
+-- at descend-time. Series / author / genre / tag drilldowns all keep
+-- their book list in tip.payload.books (see _fetchChipItems); without
+-- this, deleting a book from inside such a drilldown leaves a ghost
+-- entry visible until the user backs out and re-enters.
+--
+-- Search-mode payloads carry a similar `.books` list and matching
+-- group lists; scrub them all.
+--
+-- Folder drilldown re-queries the filesystem via Repo.getAll on every
+-- render, so no payload mutation needed for that path.
+function BookshelfWidget:_scrubFromDrilldown(filepath)
+    if not filepath or not self._drilldown_path then return end
+    for _, entry in ipairs(self._drilldown_path) do
+        local payload = entry and entry.payload
+        if type(payload) == "table" then
+            local lists = { payload.books, payload.series,
+                            payload.authors, payload.genres,
+                            payload.folders }
+            for _, list in ipairs(lists) do
+                if type(list) == "table" then
+                    for i = #list, 1, -1 do
+                        local item = list[i]
+                        if type(item) == "table" and item.filepath == filepath then
+                            table.remove(list, i)
+                        elseif type(item) == "table" and type(item.books) == "table" then
+                            -- Nested group (e.g. series in a search payload):
+                            -- scrub its inner book list too.
+                            for j = #item.books, 1, -1 do
+                                if item.books[j] and item.books[j].filepath == filepath then
+                                    table.remove(item.books, j)
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
 function BookshelfWidget:_rebuild()
     -- Refresh dimensions; detect landscape from whether Screen swapped them.
     -- Screen:getWidth()/getHeight() DO swap on rotation (KOReader software
@@ -2989,6 +3030,7 @@ function BookshelfWidget:_openBookMenu(item)
                 FileManager.instance:showDeleteFileDialog(book.filepath, function()
                     Repo.invalidateProgressCache(book.filepath)
                     Repo.invalidateWalkCache()
+                    bw:_scrubFromDrilldown(book.filepath)
                     bw:_rebuild()
                     UIManager:setDirty(bw, "ui")
                 end)
@@ -3003,6 +3045,7 @@ function BookshelfWidget:_openBookMenu(item)
                             ReadCollection:removeItem(book.filepath)
                             Repo.invalidateProgressCache(book.filepath)
                             Repo.invalidateWalkCache()
+                            bw:_scrubFromDrilldown(book.filepath)
                             bw:_rebuild()
                             UIManager:setDirty(bw, "ui")
                         else
