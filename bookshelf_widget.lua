@@ -255,11 +255,26 @@ function BookshelfWidget:handleEvent(event)
 
     if InputContainer.handleEvent(self, event) then return true end
     -- Forward unhandled events to FM so Dispatcher action events
-    -- (IncreaseFlIntensity, ToggleNightMode, etc.) reach FM's registered
-    -- modules. EXCLUDE lifecycle events that target THIS widget — without
-    -- the blacklist, UIManager:close(self) propagates CloseWidget to us,
-    -- which forwards it to FM, which then tears itself down (nil'ing
-    -- FileManager.instance). That breaks all subsequent gesture forwarding.
+    -- (IncreaseFlIntensity, ToggleNightMode bound to a gesture, etc.)
+    -- reach FM's registered modules. UIManager:sendEvent only delivers to
+    -- the topmost widget (us); without this forward, FM-side handlers for
+    -- gesture-emitted single-target events would never fire while we're up.
+    --
+    -- TWO exclusions:
+    --
+    --   1. Lifecycle events that target THIS widget. UIManager:close(self)
+    --      propagates CloseWidget to us; forwarding it to FM tears FM
+    --      down (nil'ing FileManager.instance) and breaks all subsequent
+    --      gesture forwarding.
+    --
+    --   2. Events delivered via UIManager:broadcastEvent (tagged in
+    --      main.lua's _installBroadcastTag). The broadcast loop already
+    --      delivers to FM via its window-stack iteration; our forward
+    --      would be a redundant second delivery. Harmless for idempotent
+    --      lifecycle broadcasts (Suspend, Resume) but corrupting for
+    --      toggle broadcasts (ToggleNightMode flips state twice, net
+    --      zero -- issue #19). Skipping the forward for any broadcast
+    --      lets the loop's natural delivery do its job.
     local NEVER_FORWARD = {
         onCloseWidget   = true,
         onFlushSettings = true,
@@ -267,6 +282,7 @@ function BookshelfWidget:handleEvent(event)
         onClose         = true,
     }
     if NEVER_FORWARD[event.handler] then return end
+    if event._bookshelf_from_broadcast then return end
     local fm = require("apps/filemanager/filemanager").instance
     if fm and fm ~= self then
         return fm:handleEvent(event)
