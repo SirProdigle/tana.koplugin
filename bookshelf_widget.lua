@@ -2764,12 +2764,14 @@ function BookshelfWidget:onNextPage() return self:_paginateNext() end
 function BookshelfWidget:onPrevPage() return self:_paginatePrev() end
 
 function BookshelfWidget:onBookshelfNextChip()
+    if self._chip_strip_hidden then return true end
     local key = self:_chipNeighbour(1)
     if key then self:_setActiveChip(key) end
     return true
 end
 
 function BookshelfWidget:onBookshelfPrevChip()
+    if self._chip_strip_hidden then return true end
     local key = self:_chipNeighbour(-1)
     if key then self:_setActiveChip(key) end
     return true
