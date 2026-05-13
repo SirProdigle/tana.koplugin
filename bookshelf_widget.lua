@@ -1698,36 +1698,49 @@ function BookshelfWidget:_buildPaginationFooter(content_w, label_h, total_pages)
     -- through. Back-out now lives in the chip strip's breadcrumb mode
     -- (tap the chip pill / a crumb), freeing this footer for chevrons
     -- everywhere.
-    local chev_size = Screen:scaleBySize(32)
-    local nav_span  = Screen:scaleBySize(32)
+    local chev_size    = Screen:scaleBySize(32)
+    local nav_span     = Screen:scaleBySize(32)
+    local focus_border = Screen:scaleBySize(4)
+    local focus_radius = Screen:scaleBySize(4)
     local function go(p)
         return function() bw.page = p; bw:_swapShelvesInPlace() end
     end
     local first = Button:new{
         icon = "chevron.first", icon_width = chev_size, icon_height = chev_size,
-        callback = go(1), bordersize = 0, enabled = self.page > 1, show_parent = self,
+        callback  = go(1),
+        bordersize = (focused_btn == "first") and focus_border or 0,
+        radius    = (focused_btn == "first") and focus_radius or nil,
+        enabled   = self.page > 1, show_parent = self,
     }
     local prev = Button:new{
         icon = "chevron.left",  icon_width = chev_size, icon_height = chev_size,
-        callback = go(self.page - 1), bordersize = (focused_btn == "prev") and Size.border.thin or 0,
-        enabled = self.page > 1, show_parent = self,
+        callback  = go(self.page - 1),
+        bordersize = (focused_btn == "prev") and focus_border or 0,
+        radius    = (focused_btn == "prev") and focus_radius or nil,
+        enabled   = self.page > 1, show_parent = self,
     }
     local page_text = Button:new{
         text = string.format("Page %d of %d", self.page, total_pages),
         text_font_size = 15,
-        callback = function() bw:_openSortMenu() end,
-        bordersize = 0, show_parent = self,
+        callback  = function() bw:_openSortMenu() end,
+        bordersize = (focused_btn == "page") and focus_border or 0,
+        radius    = (focused_btn == "page") and focus_radius or nil,
+        show_parent = self,
     }
     self._page_text_button = page_text
     local next_btn = Button:new{
         icon = "chevron.right", icon_width = chev_size, icon_height = chev_size,
-        callback = go(self.page + 1), bordersize = (focused_btn == "next") and Size.border.thin or 0,
-        enabled = self.page < total_pages, show_parent = self,
+        callback  = go(self.page + 1),
+        bordersize = (focused_btn == "next") and focus_border or 0,
+        radius    = (focused_btn == "next") and focus_radius or nil,
+        enabled   = self.page < total_pages, show_parent = self,
     }
     local last = Button:new{
         icon = "chevron.last", icon_width = chev_size, icon_height = chev_size,
-        callback = go(total_pages), bordersize = 0,
-        enabled = self.page < total_pages, show_parent = self,
+        callback  = go(total_pages),
+        bordersize = (focused_btn == "last") and focus_border or 0,
+        radius    = (focused_btn == "last") and focus_radius or nil,
+        enabled   = self.page < total_pages, show_parent = self,
     }
     local nav = HorizontalGroup:new{
         align = "center",
@@ -2730,6 +2743,31 @@ function BookshelfWidget:onBSFocusDown()
     return true
 end
 
+-- _footerNeighbour(cur, page, total, dir)
+-- Returns the key of the nearest enabled footer button in direction dir
+-- (dir=1 for right, dir=-1 for left), or nil if there is none.
+local _FOOTER_ORDER = {"first","prev","page","next","last"}
+local function _footerBtnEnabled(k, page, total)
+    if k == "first" or k == "prev" then return page > 1 end
+    if k == "page"                  then return true end
+    -- "next" or "last"
+    return page < total
+end
+local function _footerNeighbour(cur, page, total, dir)
+    local cur_i = 0
+    for i, k in ipairs(_FOOTER_ORDER) do
+        if k == cur then cur_i = i; break end
+    end
+    if cur_i == 0 then return nil end
+    local i = cur_i + dir
+    while i >= 1 and i <= #_FOOTER_ORDER do
+        local k = _FOOTER_ORDER[i]
+        if _footerBtnEnabled(k, page, total) then return k end
+        i = i + dir
+    end
+    return nil
+end
+
 function BookshelfWidget:onBSFocusLeft()
     if not self._focus_zone then
         self._focus_zone = "grid"
@@ -2754,8 +2792,10 @@ function BookshelfWidget:onBSFocusLeft()
     end
 
     if self._focus_zone == "footer" then
-        if self.page > 1 then
-            self._footer_cursor_btn = "prev"
+        local total   = self._total_pages or 1
+        local new_btn = _footerNeighbour(self._footer_cursor_btn, self.page, total, -1)
+        if new_btn then
+            self._footer_cursor_btn = new_btn
             self:_swapFooterInPlace()
         end
         return true
@@ -2788,9 +2828,10 @@ function BookshelfWidget:onBSFocusRight()
     end
 
     if self._focus_zone == "footer" then
-        local total = self._total_pages or 1
-        if self.page < total then
-            self._footer_cursor_btn = "next"
+        local total   = self._total_pages or 1
+        local new_btn = _footerNeighbour(self._footer_cursor_btn, self.page, total, 1)
+        if new_btn then
+            self._footer_cursor_btn = new_btn
             self:_swapFooterInPlace()
         end
         return true
@@ -2852,18 +2893,29 @@ function BookshelfWidget:onBSKbPress()
     if self._focus_zone == "footer" then
         local btn   = self._footer_cursor_btn
         local total = self._total_pages or 1
-        if btn == "next" and self.page < total then
-            self.page = self.page + 1
-            -- At last page "next" is exhausted; pivot focus to "prev".
-            if self.page >= total then self._footer_cursor_btn = "prev" end
+        if btn == "first" and self.page > 1 then
+            self.page = 1
+            self._footer_cursor_btn = "next"
             self:_swapShelvesInPlace()
             self:_swapFooterInPlace()
         elseif btn == "prev" and self.page > 1 then
             self.page = self.page - 1
-            -- At first page "prev" is exhausted; pivot focus to "next".
             if self.page <= 1 then self._footer_cursor_btn = "next" end
             self:_swapShelvesInPlace()
             self:_swapFooterInPlace()
+        elseif btn == "next" and self.page < total then
+            self.page = self.page + 1
+            if self.page >= total then self._footer_cursor_btn = "prev" end
+            self:_swapShelvesInPlace()
+            self:_swapFooterInPlace()
+        elseif btn == "last" and self.page < total then
+            self.page = total
+            self._footer_cursor_btn = "prev"
+            self:_swapShelvesInPlace()
+            self:_swapFooterInPlace()
+        elseif btn == "page" then
+            self:_clearDpadFocus()
+            self:_openSortMenu()
         end
         return true
     end
