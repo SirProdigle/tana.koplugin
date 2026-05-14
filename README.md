@@ -1,238 +1,53 @@
-# Bookshelf
+# Tana 棚
 
-A nice-looking home screen for KOReader. Lets you pick a book from your shelf
-and read it, with some customisation around the book-preview info shown for
-the currently-reading book. Books are grouped into four shelves: Recent,
-Latest, Series, and Favourites.
+A KOReader home-screen plugin — fork of [AndyHazz/bookshelf.koplugin](https://github.com/AndyHazz/bookshelf.koplugin), tracking upstream **as closely as possible** so fixes apply with `git merge`.
 
-<!-- screenshot: TODO -->
+棚 (tana) is Japanese for "shelf".
 
----
+## What's different from upstream
 
-## Quick start
+Almost nothing — that's the point.
 
-1. Download the latest release ZIP from [GitHub Releases](https://github.com/AndyHazz/bookshelf.koplugin/releases) and extract `bookshelf.koplugin/` to your KOReader plugins directory ([paths below](#installation)).
-2. Restart KOReader — Bookshelf opens automatically as the home screen.
-3. Tap **Recent**, **Latest**, **Series**, or **★** to browse your library by shelf.
-4. Open the FileManager menu (top of screen) → **Bookshelf** for settings, including the per-region hero card editor.
+- `_meta.lua`: `name = "tana"`, `fullname = "Tana"`. This is the only change KOReader's plugin loader sees, so the two plugins can be installed alongside each other (settings keys and most module names are shared, so they're effectively the same plugin with two faces — install only one in practice).
+- `bookshelf_updater.lua`: GitHub release URLs and self-update paths point at this repo (`SirProdigle/tana.koplugin`) instead of upstream. User-Agent rebranded.
+- This README.
 
----
+The `bookshelf_*` internal module names, gettext strings, `G_reader_settings` keys, menu items, event names, and class identifiers are deliberately **unchanged** so cherry-picking from upstream is trivial.
 
-Tap any spine to open that book. Long-press a spine for options (favourite, info, remove from history). On the **Series** chip, tap a series stack to drill in — the chip strip morphs into a breadcrumb (`[Series] > Series Title`) and the shelf shows that series' books. Tap the chip pill or any crumb to step back out. Pagination chevrons stay available inside drilled views, so series with more than 8 books page through normally.
+## Why this fork exists
 
-The chip list itself can be customised: **FileManager menu → Bookshelf → Edit shelf tabs** opens a 4-row submenu with checkboxes per chip. Untick the ones you don't use.
+The maki + bussybox sync setup creates a `_MANGA/` folder structure where each series is a folder with many chapter files. Bookshelf walks `home_dir` for files and shows every chapter as a separate book. Tana is the place we'll layer manga-aware behavior (folder-as-entity rendering, resume-at-last-chapter on tap, `_`-prefix sort priority) without burdening AndyHazz with a niche use case.
 
----
+Those features land here over time. Until they do, **Tana is feature-identical to upstream Bookshelf v1.1.2.**
 
-## Gestures
+## Tracking upstream
 
-| Gesture | Where | What it does |
-|---------|-------|--------------|
-| **Tap** | Shelf cover (2-row mode) | Preview the book in the hero card |
-| **Tap** | Shelf cover (3-row mode) | Open the book directly in the Reader |
-| **Tap** | Hero card | Open the previewed book in the Reader |
-| **Tap** | Compact strip (3-row mode) | Restore the full hero (back to 2-row) |
-| **Tap** | Chip | Switch shelf (Recent / Latest / Series / …) |
-| **Tap** | Currently-reading chip (📖) | Drop any preview, restore hero to the lastfile (also collapses 3-row → 2-row) |
-| **Tap** | "Page X of Y" footer | Open the per-chip sort menu |
-| **Tap** | Chevron buttons in footer | First / previous / next / last page |
-| **Long-press** | Shelf cover | Open the per-book menu (Show info, Add to favourites, Go to author / series / genre, Remove from history) |
-| **Swipe west (←)** | Hero card | Cycle preview to the next book in the active chip |
-| **Swipe west (←)** | Anywhere else | Next page; on the last page, switches to the next chip |
-| **Swipe east (→)** | Hero card | Cycle preview to the previous book |
-| **Swipe east (→)** | Anywhere else | Previous page; on page 1, drills back out of folder/series, or switches to the previous chip |
-| **Swipe north (↑)** | Anywhere | Collapse hero to a thin status strip, expand the grid from 2 rows to 3 (more books on screen) |
-| **Swipe south (↓)** | Anywhere | Restore the full hero, back to 2-row grid |
-
-In 3-row mode the visible top two rows are preserved across the toggle — if you're on page 4 in 2-row, you stay on page 4 in 3-row, with the new third row appearing below the same eight covers. Page numbers may shift slightly on toggle (the totals differ because each mode shows a different number of books per page).
-
----
-
-## Book detail view  editor
-
-Five regions of the hero card are user-editable token templates with per-region styling. Open **FileManager menu → Bookshelf → Edit book detail view** for a drill-down submenu showing all five regions with a live preview snippet:
-
-```
-☑ Status: 14:32  ⚡73%  💡 18%  📶
-☑ Title: The Great Gatsby
-☑ Author: F. Scott Fitzgerald
-☑ Description: In my younger and more vulnerable years…
-☑ Progress: 36%  ━━━━━━━━━┯━━━  3h 12m LEFT
+```bash
+git fetch upstream
+git merge upstream/master
+# fix any conflicts (usually none) and push
 ```
 
-- **Tap a row** — opens the line editor for that region. The chooser hides while editing so you can see the live hero update as you type.
-- **Long-press a row** — toggles the region on/off (the checkbox flips and the region appears/disappears in the hero immediately).
+The only files we modify outside the upstream tree are `_meta.lua`, `bookshelf_updater.lua`, and `README.md`. Upstream changes to those files will need a manual look; everything else merges clean.
 
-### Line editor
+## Install
 
-The editor offers per-region controls:
-
-| Button | What it does |
-|--------|--------------|
-| **Bold** | Toggle bold weight |
-| **Size** | ±1 / ±5 nudge dialog (range 8–48 px) |
-| **Font** | Font family picker (richer UI when [Bookends](https://github.com/AndyHazz/bookends.koplugin) is installed) |
-| **Aa / AA** | Case toggle (hidden on Description) |
-| **L / C / R** | Alignment cycle (left / centre / right) |
-| **Bar style** | Cycle through 7 bar styles (Progress region only, requires Bookends) |
-| **+ Bar / − Bar** | Insert or remove the `%bar` token in the Progress template |
-| **Bar height** | ±1 / ±5 nudge for the inline bar's pixel height |
-| **Tokens…** | Pick from a categorised token catalogue with live preview |
-| **Icons…** | Insert icon glyphs (requires Bookends) |
-| **Default** | Reset this region's template + styling to defaults |
-| **Cancel** | Revert and close (snapshot taken on open is restored) |
-| **Save** | Persist and close |
-
-Edits update the hero in real time. The renderer rebuilds **only the right column** of the card on each keystroke — the cover stays untouched, no BIM thumbnail re-fetch.
-
-### Bookends soft-dependencies
-
-Several editor surfaces use the [Bookends](https://github.com/AndyHazz/bookends.koplugin) plugin when it's installed; everything degrades gracefully when it isn't:
-
-| Surface | With Bookends | Without |
-|---------|---------------|---------|
-| Token picker | Categorised modal with chips, search, live preview | Plain Menu over the catalogue |
-| Icon picker | Full Material-Design icon library | Button hidden |
-| Font picker | Each font family rendered in its own typeface, weight-variant dedup | Plain Menu over the system font list |
-| Progress-bar styles | 7 styles (`bordered`, `solid`, `rounded`, `metro`, `wavy`, `radial`, `radial_hollow`) | 2 styles (`bordered`, `solid`) |
-
----
-
-## Token cheatsheet
-
-Tokens are placeholders prefixed with `%`. Conditional logic uses `[if:cond]…[else]…[/if]`.
-
-### Book metadata
-
-| Token | Example |
-|-------|---------|
-| `%title` | *The Great Gatsby* |
-| `%author` | *F. Scott Fitzgerald* (first author) |
-| `%authors` | *Neil Gaiman, Terry Pratchett* (all authors) |
-| `%series` / `%series_name` | *Dune* |
-| `%series_num` | *1* |
-| `%filename` | *The_Great_Gatsby* |
-| `%format` | *EPUB* |
-| `%lang` | *en* |
-| `%description` | Book blurb (HTML stripped, entities decoded) |
-
-### Position / progress
-
-| Token | Example |
-|-------|---------|
-| `%page_num` / `%page_count` | *42* / *218* |
-| `%pages_left` | *176* |
-| `%book_pct` / `%book_pct_left` | *19%* / *81%* |
-| `%bar` | Inline progress-bar widget (Progress region only) |
-
-### Statistics (requires the `statistics` plugin)
-
-| Token | Example |
-|-------|---------|
-| `%book_time_left` | *3h 45m* |
-| `%book_read_time` | *2h 30m* |
-| `%days_reading_book` | *7* |
-| `%pages_per_day` | *12* |
-| `%speed` | *42* (pages per hour) |
-
-Stat tokens auto-hide when the statistics plugin is absent or the book has no recorded reading time.
-
-### Time / date
-
-| Token | Example |
-|-------|---------|
-| `%time` / `%time_24h` | *14:35* |
-| `%time_12h` | *2:35 pm* |
-| `%date` / `%date_long` / `%date_numeric` | *3 May* / *3 May 2026* / *03/05/2026* |
-| `%weekday` / `%weekday_short` | *Monday* / *Mon* |
-| `%datetime{%H:%M}` | Custom `os.date` format |
-
-### Device
-
-| Token | Example |
-|-------|---------|
-| `%batt` / `%batt_icon` | *73%* / charge-aware glyph |
-| `%wifi_icon` | Wi-Fi icon (connected / disconnected) |
-| `%light` / `%light_icon` | *18* / lightbulb glyph |
-| `%warmth` | Frontlight warmth (natural-light only) |
-| `%nightmode` | Moon glyph when night mode is on, sun otherwise |
-| `%mem` / `%ram` | System memory (%) / KOReader RSS (MiB) |
-
-### Conditionals
-
-```
-[if:book_time_left]%book_time_left LEFT[else]Open to start reading[/if]
-[if:lang!=en]Lang: %lang\n[/if]%description
-[if:batt<20]LOW BATTERY %batt[/if]
-[if:not series]Standalone[/if]
-```
-
-Operators: `=` `!=` `<` `>` `<=` `>=`. Boolean: `and`, `or`, `not`. Numeric tokens compare numerically; string tokens compare by string equality.
-
----
-
-## Installation
-
-**Manual install:** Download the latest release ZIP from [GitHub Releases](https://github.com/AndyHazz/bookshelf.koplugin/releases) and extract to your KOReader plugins directory:
+Copy the contents of this repo into `<koreader>/plugins/tana.koplugin/`:
 
 | Device | Path |
 |--------|------|
-| Kindle | `/mnt/us/koreader/plugins/bookshelf.koplugin/` |
-| Kobo | `/mnt/onboard/.adds/koreader/plugins/bookshelf.koplugin/` |
-| Android | `<koreader-dir>/plugins/bookshelf.koplugin/` |
+| Kindle | `/mnt/us/koreader/plugins/tana.koplugin/` |
+| Kobo | `/mnt/onboard/.adds/koreader/plugins/tana.koplugin/` |
+| Desktop | `<koreader-dir>/plugins/tana.koplugin/` |
 
-Restart KOReader after installing.
+Restart KOReader, then enable under **Plugin management → Tana**.
 
----
+If you currently have upstream Bookshelf installed, **uninstall it first** — both plugins share `G_reader_settings` keys and `menu_items` registrations, so running them simultaneously will produce undefined behavior.
 
-## Updates
+## Credits
 
-Bookshelf can update itself in place over Wi-Fi. Settings live under
-**FileManager menu → Bookshelf → Updates**:
-
-- **Notify on wake when update available** — opt-in; once an hour after a Wi-Fi-connected wake, Bookshelf checks the GitHub releases API and posts a brief notification if a newer release exists. Off by default.
-- **Installed version: vX (release)** / **Update available: vX → vY** — tap the row to fetch release notes between installed and latest, and choose **Update and restart**. The release path needs a published ZIP asset on the GitHub release.
-- **Advanced → Development branch** — set a branch name (e.g. `feat/foo`); the row labels flip to **Install branch: foo**. Tapping installs the tip of that branch (no release tag required) — useful for testing fixes when you can't reach the device over the local network.
-- **Advanced → Reset to latest stable release** — clears the dev-branch setting and pulls the latest published release ZIP, then restarts KOReader.
-
-The whole pipeline (download → unpack → restart prompt) requires only Wi-Fi.
-
----
-
-## Configuration
-
-Settings are stored in KOReader's main settings file alongside all other plugin state:
-
-| Platform | Path |
-|----------|------|
-| Linux / dev | `~/.config/koreader/settings.reader.lua` |
-| Kindle | `/mnt/us/koreader/settings.reader.lua` |
-| Kobo | `/mnt/onboard/.adds/koreader/settings.reader.lua` |
-| Android | `<koreader-dir>/settings.reader.lua` |
-
-Bookshelf-specific keys are prefixed `bookshelf_`:
-
-| Key | Shape |
-|-----|-------|
-| `bookshelf_hero_regions` | Per-region overrides (sparse). One entry per region (`status` / `title` / `author` / `description` / `progress`) with a subset of `template`, `font_face`, `font_size`, `bold`, `uppercase`, `alignment`, `disabled`, `bar_style`, `bar_height` — anything not present falls through to defaults. |
-| `bookshelf_font_scale` | Global zoom for hero text (50–200%). |
-| `bookshelf_active_chip` | Last-selected chip (`recent` / `latest` / `series` / `favorites`). |
-| `bookshelf_chips_disabled` | Sparse map of chip keys the user has hidden via "Edit shelf tabs" (e.g. `{ favorites = true }`). Absent = all chips enabled. |
-| `bookshelf_latest_walk_depth` | How deep the **Latest** chip scans your library. |
-| `bookshelf_dev_branch` | Branch name for in-app dev-branch installs; empty = stable releases only. |
-| `bookshelf_last_install_source` | `release` or `branch:<name>` — set automatically by the in-app updater. |
-| `bookshelf_check_updates` | Boolean: silent wake-time release-check. Off by default. |
-
----
-
-## Known limitations
-
-- **`%bar` outside the Progress region** renders as the literal text `%bar`. The inline-bar split only runs in the progress block of the renderer; in other regions there's no bar widget to layer in.
-- **Italic** is reachable only via the font picker (selecting an italic family). The line editor has no italic toggle because `TextBoxWidget` doesn't synthesise italic from upright fonts.
-- **Inline format tags** `[b]`, `[i]`, `[u]` in templates are stripped before display. Per-region bold is via the Bold button, not the `[b]` tag.
-
----
+The entire codebase is [AndyHazz/bookshelf.koplugin](https://github.com/AndyHazz/bookshelf.koplugin) — AGPL-3.0. Every feature, every line of widget code, every locale file is upstream's work. This fork exists to add a thin layer of customisation; the upstream README is the source of truth for everything else.
 
 ## License
 
-AGPL-3.0 — see [LICENSE](LICENSE)
+AGPL-3.0, inherited from upstream. See [LICENSE](LICENSE).

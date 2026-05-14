@@ -1,7 +1,7 @@
 local _ = require("bookshelf_i18n").gettext
 return {
-    name = "bookshelf",
-    fullname = _("Bookshelf"),
-    description = _([[A nice-looking home screen for KOReader: pick a book from your shelf and read it, with some customisation around the book-preview info that's shown.]]),
-    version = "1.1.2",
+    name = "tana",
+    fullname = _("Tana"),
+    description = _([[Tana (棚, "shelf") — KOReader home screen. Fork of AndyHazz/bookshelf.koplugin customised for the maki + bussybox setup. Tracks upstream closely; only the plugin name differs from Bookshelf v1.1.2.]]),
+    version = "1.1.2-tana.0",
 }

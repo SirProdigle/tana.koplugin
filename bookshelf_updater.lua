@@ -15,7 +15,7 @@ local CHECK_INTERVAL = 3600   -- 1 hour
 
 function Updater.getInstalledVersion()
     local DataStorage = require("datastorage")
-    local meta_path = DataStorage:getDataDir() .. "/plugins/bookshelf.koplugin/_meta.lua"
+    local meta_path = DataStorage:getDataDir() .. "/plugins/tana.koplugin/_meta.lua"
     local ok_meta, meta = pcall(dofile, meta_path)
     return (ok_meta and meta and meta.version) or "unknown"
 end
@@ -47,7 +47,7 @@ function Updater.composeBranchUrl(branch)
         return string.format("%%%02X", c:byte())
     end)
     return string.format(
-        "https://api.github.com/repos/AndyHazz/bookshelf.koplugin/zipball/%s",
+        "https://api.github.com/repos/SirProdigle/tana.koplugin/zipball/%s",
         encoded)
 end
 
@@ -86,7 +86,7 @@ local function httpGetJSON(url, user_agent)
     end
     -- Fallback: curl (available on Android, desktop)
     local handle = io.popen(string.format(
-        "curl -s -L -H 'User-Agent: KOReader-Bookshelf' -H 'Accept: application/vnd.github.v3+json' %q",
+        "curl -s -L -H 'User-Agent: KOReader-Tana' -H 'Accept: application/vnd.github.v3+json' %q",
         url))
     if handle then
         local body = handle:read("*a")
@@ -100,7 +100,7 @@ local function httpGetJSON(url, user_agent)
 end
 
 function Updater.offerReleasesPage(message)
-    local url = "https://github.com/AndyHazz/bookshelf.koplugin/releases"
+    local url = "https://github.com/SirProdigle/tana.koplugin/releases"
     if Device:canOpenLink() then
         UIManager:show(ConfirmBox:new{
             text = message .. "\n\n" .. _("Open the releases page in a browser?"),
@@ -138,11 +138,11 @@ function Updater.checkBackground(on_update_found)
 
     UIManager:scheduleIn(0.1, function()
         local installed_version = Updater.getInstalledVersion()
-        local user_agent = "KOReader-Bookshelf/" .. installed_version
+        local user_agent = "KOReader-Tana/" .. installed_version
 
         -- Only fetch the latest release (lightweight)
         local release = httpGetJSON(
-            "https://api.github.com/repos/AndyHazz/bookshelf.koplugin/releases/latest",
+            "https://api.github.com/repos/SirProdigle/tana.koplugin/releases/latest",
             user_agent)
 
         _check_in_flight = false
@@ -191,11 +191,11 @@ function Updater.check(on_success)
     })
 
     UIManager:scheduleIn(0.1, function()
-        local user_agent = "KOReader-Bookshelf/" .. installed_version
+        local user_agent = "KOReader-Tana/" .. installed_version
 
         -- Fetch all releases to gather notes between installed and latest
         local releases = httpGetJSON(
-            "https://api.github.com/repos/AndyHazz/bookshelf.koplugin/releases",
+            "https://api.github.com/repos/SirProdigle/tana.koplugin/releases",
             user_agent)
         if not releases or #releases == 0 then
             Updater.offerReleasesPage(_("Could not check for updates."))
@@ -313,7 +313,7 @@ function Updater.install(zip_url, old_version, new_version, on_success, error_la
         if lfs.attributes(cache_dir, "mode") ~= "directory" then
             lfs.mkdir(cache_dir)
         end
-        local zip_path = cache_dir .. "/bookshelf.koplugin.zip"
+        local zip_path = cache_dir .. "/tana.koplugin.zip"
 
         -- Try LuaSocket first, fall back to curl
         local downloaded = false
@@ -333,7 +333,7 @@ function Updater.install(zip_url, old_version, new_version, on_success, error_la
                         url = zip_url,
                         method = "GET",
                         headers = {
-                            ["User-Agent"] = "KOReader-Bookshelf/" .. old_version,
+                            ["User-Agent"] = "KOReader-Tana/" .. old_version,
                         },
                         sink = ltn12.sink.file(file),
                         redirect = true,
@@ -371,7 +371,7 @@ function Updater.install(zip_url, old_version, new_version, on_success, error_la
         end
 
         -- Extract to plugin directory (strip root folder from ZIP)
-        local plugin_path = DataStorage:getDataDir() .. "/plugins/bookshelf.koplugin"
+        local plugin_path = DataStorage:getDataDir() .. "/plugins/tana.koplugin"
         local ok, err = Device:unpackArchive(zip_path, plugin_path, true)
         pcall(os.remove, zip_path)
 
@@ -446,9 +446,9 @@ function Updater.installLatestStable(on_success)
 
     UIManager:scheduleIn(0.1, function()
         local installed_version = Updater.getInstalledVersion()
-        local user_agent = "KOReader-Bookshelf/" .. installed_version
+        local user_agent = "KOReader-Tana/" .. installed_version
         local release = httpGetJSON(
-            "https://api.github.com/repos/AndyHazz/bookshelf.koplugin/releases/latest",
+            "https://api.github.com/repos/SirProdigle/tana.koplugin/releases/latest",
             user_agent)
         if not release or not release.tag_name or release.draft or release.prerelease then
             Updater.offerReleasesPage(_("Could not fetch latest release."))
