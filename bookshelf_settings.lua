@@ -396,13 +396,14 @@ end
 -- (if the bookshelf is live) rebuilds the strip.
 function Settings:_chipsSubItems()
     local CHIP_ORDER  = {
-        "all", "recent", "latest", "series", "authors", "genres",
+        "all", "recent", "latest", "manga", "series", "authors", "genres",
         "tags", "favorites",
     }
     local CHIP_LABELS = {
         all       = _("Home"),
         recent    = _("Recent"),
         latest    = _("Latest"),
+        manga     = _("Manga"),
         series    = _("Series"),
         authors   = _("Authors"),
         genres    = _("Genres"),
@@ -620,12 +621,120 @@ function Settings:_settingsSubItems()
             end,
         },
         {
+            text                = _("Manga collections"),
+            sub_item_table_func = function()
+                return self:_mangaSubItems()
+            end,
+        },
+        {
             text                = _("Advanced settings"),
             sub_item_table_func = function()
                 return self:_advancedSubItems()
             end,
         },
     }
+end
+
+-- _mangaSubItems() — sub-menu for Tana's manga collection layer. Lets the
+-- user point Tana at the folder(s) that hold their manga series and
+-- toggle whether chapter files are hidden from the rest of the library
+-- (the only reason to disable: temporary diagnostics).
+function Settings:_mangaSubItems()
+    return {
+        {
+            text     = _("Edit manga roots"),
+            callback = function() self:_editMangaRoots() end,
+        },
+        {
+            text     = _("Hide chapter files in listings"),
+            help_text = _("When on, individual manga chapters are hidden "
+                .. "from Recent / Latest / All listings — only the "
+                .. "collection cards appear. Disable to see every "
+                .. "chapter file alongside your books."),
+            checked_func = function()
+                local v = G_reader_settings:readSetting("tana_hide_chapters")
+                if v == nil then return true end
+                return v ~= false
+            end,
+            keep_menu_open = true,
+            callback = function()
+                local v = G_reader_settings:readSetting("tana_hide_chapters")
+                if v == nil then v = true end
+                G_reader_settings:saveSetting("tana_hide_chapters", not v)
+                G_reader_settings:flush()
+                local ok, Repo = pcall(require, "bookshelf_book_repository")
+                if ok and Repo and Repo.invalidateWalkCache then
+                    Repo.invalidateWalkCache()
+                end
+                if self._bw and self._bw._rebuild then
+                    self._bw:_rebuild()
+                    UIManager:setDirty(self._bw, "ui")
+                end
+            end,
+        },
+    }
+end
+
+-- Multi-line InputDialog so the user can type one manga-root path per line.
+-- Paths are stored relative to home_dir if they don't start with /. The
+-- default ("_MANGA") matches the maki sync layout out of the box.
+function Settings:_editMangaRoots()
+    local InputDialog = require("ui/widget/inputdialog")
+    local current = G_reader_settings:readSetting("tana_manga_roots")
+    if type(current) ~= "table" or #current == 0 then current = { "_MANGA" } end
+
+    local dlg
+    dlg = InputDialog:new{
+        title        = _("Manga roots"),
+        description  = _("One path per line. Relative paths resolve under "
+            .. "home_dir; absolute paths start with /. Direct subfolders of "
+            .. "each root are treated as manga collections."),
+        input        = table.concat(current, "\n"),
+        input_hint   = "_MANGA",
+        input_type   = "string",
+        allow_newline = true,
+        buttons = {
+            {
+                {
+                    text     = _("Cancel"),
+                    id       = "close",
+                    callback = function() UIManager:close(dlg) end,
+                },
+                {
+                    text             = _("Save"),
+                    is_enter_default = true,
+                    callback = function()
+                        local raw = dlg:getInputText() or ""
+                        local roots = {}
+                        for line in raw:gmatch("[^\r\n]+") do
+                            local trimmed = line:match("^%s*(.-)%s*$")
+                            if trimmed and trimmed ~= "" then
+                                roots[#roots + 1] = trimmed
+                            end
+                        end
+                        if #roots == 0 then roots = { "_MANGA" } end
+                        G_reader_settings:saveSetting("tana_manga_roots", roots)
+                        G_reader_settings:flush()
+                        local ok_tm, TanaManga = pcall(require, "tana_manga")
+                        if ok_tm and TanaManga and TanaManga.invalidate then
+                            TanaManga.invalidate()
+                        end
+                        local ok, Repo = pcall(require, "bookshelf_book_repository")
+                        if ok and Repo and Repo.invalidateWalkCache then
+                            Repo.invalidateWalkCache()
+                        end
+                        UIManager:close(dlg)
+                        if self._bw and self._bw._rebuild then
+                            self._bw:_rebuild()
+                            UIManager:setDirty(self._bw, "ui")
+                        end
+                    end,
+                },
+            },
+        },
+    }
+    UIManager:show(dlg)
+    dlg:onShowKeyboard()
 end
 
 -- Factored out from main.lua so it can be referenced via the new Settings

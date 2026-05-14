@@ -459,8 +459,12 @@ function SpineWidget:_renderShadowedCard(inner)
     --    user got here from), gated by:
     --      * self.show_progress -- grid-only surface (hero / folder /
     --        series stacks reuse SpineWidget but opt out).
+    --      * self.hide_series_num -- per-render override so contexts
+    --        like Tana's flat Home chip can suppress the badge for
+    --        every book in the grid even though the global setting
+    --        leaves it on.
     --      * Setting bookshelf_show_series_num (default ON).
-    if self.show_progress and _showSeriesNum()
+    if self.show_progress and not self.hide_series_num and _showSeriesNum()
             and self.book and self.book.series_num then
         local TextWidget     = require("ui/widget/textwidget")
         local Font           = require("ui/font")

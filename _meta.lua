@@ -2,6 +2,6 @@ local _ = require("bookshelf_i18n").gettext
 return {
     name = "tana",
     fullname = _("Tana"),
-    description = _([[Tana (棚, "shelf") — KOReader home screen. Fork of AndyHazz/bookshelf.koplugin customised for the maki + bussybox setup. Tracks upstream closely; only the plugin name differs from Bookshelf v1.1.2.]]),
-    version = "1.1.2-tana.0",
+    description = _([[Tana (棚, "shelf") — KOReader home screen for the maki + bussybox library. Manga-aware fork of AndyHazz/bookshelf.koplugin: dedicated Manga chip, chapter-file folding, resume-from-last-read action sheet, 2×2 cover mosaics for book series.]]),
+    version = "1.3.0-tana.0",
 }

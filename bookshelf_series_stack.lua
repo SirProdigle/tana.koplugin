@@ -81,7 +81,11 @@ function SeriesStack:init()
         folder_widget,
         label_widget,
     }
-    if books and #books > 0 then
+    -- count_override is honoured for manga collections: the shape carries
+    -- exactly one cover Book record (the first chapter) but the badge
+    -- should read the real chapter count, e.g. ×255.
+    local badge_count = (self.series and self.series.count_override) or (books and #books) or 0
+    if badge_count > 0 then
         local badge = FrameContainer:new{
             bordersize     = Size.border.thin,
             background     = Blitbuffer.COLOR_WHITE,
@@ -91,7 +95,7 @@ function SeriesStack:init()
             padding_top    = Size.padding.small,
             padding_bottom = Size.padding.small,
             TextWidget:new{
-                text = "\xc3\x97" .. tostring(#books),  -- × (UTF-8 U+00D7)
+                text = "\xc3\x97" .. tostring(badge_count),  -- × (UTF-8 U+00D7)
                 face = Font:getFace("smallinfofont", 12),
                 bold = true,
             }

@@ -431,14 +431,18 @@ function BookshelfWidget:_rebuild()
     -- chip is disabled.
     local CHIP_LABELS = {
         all = "Home", recent = "Recent", latest = "Latest",
+        manga = "Manga",
         series = "Series", authors = "Authors", genres = "Genres",
         tags = "Tags", favorites = "Favourites",
     }
     -- "All" leads (folder-aware browse rooted at home_dir, honours the
     -- user's KOReader collate / reverse / mixed / book-status-filter
     -- settings via FileChooser:genItemTableFromPath).
+    -- Tana inserts a dedicated "Manga" chip between Latest and Series so
+    -- the user can jump to their manga collections in a single tap rather
+    -- than drilling into _MANGA/ through All.
     local CHIP_ORDER = {
-        "all", "recent", "latest", "series", "authors", "genres",
+        "all", "recent", "latest", "manga", "series", "authors", "genres",
         "tags", "favorites",
     }
     local disabled_set = _resolveDisabledSet()
@@ -1361,6 +1365,7 @@ function BookshelfWidget:_fetchChipItems(n)
     if self.chip == "all"       then return Repo.getAll(nil, LIMIT, offset)  end
     if self.chip == "recent"    then return Repo.getRecent(LIMIT, offset)    end
     if self.chip == "latest"    then return Repo.getLatest(LIMIT, offset)    end
+    if self.chip == "manga"     then return Repo.getMangaCollections(LIMIT, offset) end
     if self.chip == "series"    then return Repo.getSeriesGroups(LIMIT, offset) end
     if self.chip == "authors"   then return Repo.getAuthors(LIMIT, offset)   end
     if self.chip == "genres"    then return Repo.getGenres(LIMIT, offset)    end
@@ -1378,6 +1383,7 @@ function BookshelfWidget:_chipLabel()
     local labels = {
         recent    = "Recently read",
         latest    = "Latest additions",
+        manga     = "Manga",
         series    = "Your series",
         authors   = "Authors",
         genres    = "Genres",
@@ -1535,6 +1541,7 @@ function BookshelfWidget:_buildHero(content_w, hero_cover_w, hero_cover_h, hero_
         current = Repo.getCurrent()
     end
     if current then Repo.enrichStats(current) end
+    local bw_self = self
     local card = HeroCard:new{
         book         = current,
         width        = content_w,
@@ -1545,6 +1552,13 @@ function BookshelfWidget:_buildHero(content_w, hero_cover_w, hero_cover_h, hero_
         device_state = self:_buildDeviceState(),
         on_tap       = function(b) self:_openBook(b) end,
         on_hold      = function(b) self:_openBookMenu(b) end,
+        -- Tana: top-right glyph escapes to the file manager at home_dir
+        -- so the user always has a reliable hatch to file browsing
+        -- without leaving Tana via the system menu.
+        on_filebrowser = function()
+            local home = G_reader_settings:readSetting("home_dir")
+            bw_self:_openInFileBrowser(home or "/")
+        end,
         is_selected  = (self._focus_zone == "hero"),
     }
     self._hero_card = card
@@ -1679,6 +1693,13 @@ function BookshelfWidget:_buildShelfRows(items, content_w, shelf_h, PAD, n_rows)
         on_tag_hold       = function(_) end,
         on_folder_tap     = function(f) bw:_expandFolder(f) end,
         on_folder_hold    = function(_) end,  -- no folder menu yet
+        on_manga_tap      = function(c) bw:_openManga(c) end,
+        on_manga_hold     = function(_) end,  -- delete/refresh menu TBD
+        -- Tana: suppress the "#N" series badge on the flat Home chip.
+        -- It only carries useful information in a series-grouped view
+        -- (e.g. drilled into Foundation, where #1 / #2 / #3 disambiguate);
+        -- on Home every card is standalone so the badge is noise.
+        hide_series_num   = (self.chip == "all"),
     }
     local rows = {}
     for r = 1, n_rows do
@@ -1876,6 +1897,14 @@ function BookshelfWidget:_openSortMenu()
             text = _("Date added"), face = face,
             checked = true, radio = true, enabled = false, width = btn_w,
         })
+    elseif chip == "manga" then
+        -- Manga chip sort is hard-coded: most-recently-read first, alpha
+        -- secondary. A user-facing sort menu would be nice but the chip
+        -- has only ~10 cards on a typical setup so it doesn't earn one yet.
+        table.insert(radio_rows, CheckButton:new{
+            text = _("Recently read"), face = face,
+            checked = true, radio = true, enabled = false, width = btn_w,
+        })
     elseif chip == "favorites" then
         table.insert(radio_rows, radio_row(_("Date added"),    "date_added"))
         table.insert(radio_rows, radio_row(_("Title"),         "title"))
@@ -1923,7 +1952,7 @@ function BookshelfWidget:_openSortMenu()
     -- Apply writes pending state to settings; Cancel discards.
     -- "recent" chip has nothing to apply so both buttons just close.
     local function do_apply()
-        if chip ~= "recent" then
+        if chip ~= "recent" and chip ~= "manga" then
             G_reader_settings:saveSetting("bookshelf_sort_" .. chip, selected_sort)
         end
         for key, val in pairs(toggle_states) do
@@ -1938,7 +1967,7 @@ function BookshelfWidget:_openSortMenu()
     end
 
     local bottom_buttons
-    if chip == "recent" then
+    if chip == "recent" or chip == "manga" then
         bottom_buttons = { { { text = _("Close"), callback = do_cancel } } }
     else
         bottom_buttons = { {
@@ -2210,6 +2239,7 @@ function BookshelfWidget:_needsReaderReturnShelfRefresh()
     local chip = self.chip
     if chip == "recent" then return true end
     if chip == "latest" then return false end
+    if chip == "manga"  then return true end  -- sorts by most-recent-chapter
     if chip == "favorites" then
         return Repo.getSortKey("favorites") == "recently_read"
     end
@@ -3852,6 +3882,46 @@ function BookshelfWidget:_expandFolder(folder)
         label   = label,
         payload = { path = folder.path, first_book = folder.first_book },
     }
+end
+
+-- ─── Manga collection tap → action sheet ─────────────────────────────────
+--
+-- `coll` is the collection shape produced by tana_manga.buildCollectionShape
+-- (kind = "manga", path, label, chapter_count, first_fp, series_name, books).
+-- The action sheet picks Resume (history-driven), Start from chapter 1,
+-- Browse chapters (drill into the folder), or File browser (escape Tana).
+function BookshelfWidget:_openManga(coll)
+    if not coll or not coll.path then return end
+    local TanaManga       = require("tana_manga")
+    local TanaActionSheet = require("tana_action_sheet")
+    local resume = TanaManga.getResume(coll.path, Repo.readProgress)
+    local title  = TanaActionSheet.formatTitle(
+        coll.label or coll.series_name, coll.chapter_count)
+    local bw = self
+    TanaActionSheet.show{
+        title          = title,
+        resume         = resume,
+        first_fp       = coll.first_fp,
+        coll_path      = coll.path,
+        on_open        = function(fp) bw:_openBook({ filepath = fp }) end,
+        on_browse      = function(path)
+            bw:_expandFolder{ path = path, label = coll.label }
+        end,
+        on_filebrowser = function(path) bw:_openInFileBrowser(path) end,
+    }
+end
+
+-- _openInFileBrowser(path) — close Tana and navigate FileManager to `path`.
+-- Mirrors bussysync's _refreshFileManager idiom: read the FileChooser off
+-- self.ui (set when Tana is rendered inside FileManager), call
+-- changeToPath, then close the BookshelfWidget so the file manager is the
+-- topmost surface.
+function BookshelfWidget:_openInFileBrowser(path)
+    if not path then return end
+    UIManager:close(self)
+    if self.ui and self.ui.file_chooser then
+        self.ui.file_chooser:changeToPath(path)
+    end
 end
 
 -- ─── Dismiss / passthrough ───────────────────────────────────────────────────

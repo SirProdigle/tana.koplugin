@@ -65,6 +65,12 @@ local function getReadHistory()  return require("readhistory") end
 local function getCollections()  return require("readcollection") end
 local function getBookInfoMgr()  return require("bookinfomanager") end
 local function getDocSettings()  return require("docsettings") end
+-- Tana manga awareness — kept lazy so the repository can still be loaded
+-- under a stubbed test harness that doesn't ship the tana_manga module.
+local function getTanaManga()
+    local ok, m = pcall(require, "tana_manga")
+    return ok and m or nil
+end
 
 -- Resolve the user's library root from G_reader_settings. Returns the
 -- configured home_dir, or nil when it is unset / empty. "/" is allowed:
@@ -501,6 +507,36 @@ function Repo.buildBook(filepath)
         book.page_num = math.floor(book.book_pct * book.page_count + 0.5)
         if book.page_num < 1 then book.page_num = 1 end
     end
+
+    -- Tana hero override for manga chapter files. The hero card renders
+    -- `title` big and `author` small by default. For a chapter file like
+    -- "Official_Chapter 97.cbz" we re-aim those so the user reads the
+    -- SERIES name big with the chapter + progress underneath instead of
+    -- the chapter filename + nothing. Only buildBook() (hero path) is
+    -- patched — shelf-card paths (buildBookMeta) still see the raw
+    -- chapter title so drill-into-collection shows "Ch 1", "Ch 2" etc.
+    local tm = getTanaManga()
+    if tm and tm.isChapterFile(filepath) then
+        local coll = tm.collectionFor(filepath)
+        local coll_label = coll and (coll:match("([^/]+)$") or coll) or nil
+        if coll_label then
+            local chap_label = tm.chapterLabel(book.filename or filepath)
+            local pieces = { chap_label or "Chapter" }
+            if book.page_num and book.page_count then
+                pieces[#pieces + 1] = string.format("p%d / %d", book.page_num, book.page_count)
+            elseif book.book_pct then
+                pieces[#pieces + 1] = string.format("%d%%", math.floor((book.book_pct or 0) * 100 + 0.5))
+            end
+            book.title       = coll_label
+            book.author      = table.concat(pieces, "  \xc2\xb7  ")  -- " · "
+            book.authors     = nil
+            book.description = nil
+            book.series_name = nil  -- prevent metadata region from duplicating
+            book.series_num  = nil
+            book.series      = nil
+            book.is_chapter  = true
+        end
+    end
     return book
 end
 
@@ -540,16 +576,41 @@ function Repo.getRecent(limit, offset)
     --
     -- Single pass: count non-dim entries (= total) while fetching
     -- buildBookMeta only for the visible slice [offset+1, offset+limit].
+    -- Tana folds chapter-file recency up to the manga-collection level so
+    -- the chip surfaces "Chainsaw Man" (one card) rather than "Ch 97, Ch
+    -- 96, Ch 95…" (three cards out of the eight that fit).
+    local tm = getTanaManga()
+    local fold_chapters = tm and tm.hideChaptersEnabled()
+    local seen_colls = {}
     local total = 0
     for i = 1, #rh.hist do
         local entry = rh.hist[i]
         if not entry.dim then
-            total = total + 1
-            if total > offset and #out < limit then
-                local book = Repo.buildBookMeta(entry.file)
-                if book then
-                    book.last_read_time = entry.time
-                    out[#out + 1] = book
+            local coll_path
+            if fold_chapters then
+                coll_path = tm.collectionFor(entry.file)
+            end
+            if coll_path then
+                if not seen_colls[coll_path] then
+                    seen_colls[coll_path] = true
+                    total = total + 1
+                    if total > offset and #out < limit then
+                        local label = coll_path:match("([^/]+)$") or coll_path
+                        local shape = tm.buildCollectionShape(coll_path, label, Repo.buildBookMeta)
+                        if shape then
+                            shape.last_read_time = entry.time
+                            out[#out + 1] = shape
+                        end
+                    end
+                end
+            else
+                total = total + 1
+                if total > offset and #out < limit then
+                    local book = Repo.buildBookMeta(entry.file)
+                    if book then
+                        book.last_read_time = entry.time
+                        out[#out + 1] = book
+                    end
                 end
             end
         end
@@ -848,6 +909,18 @@ function Repo.getLatest(limit, offset)
     local home       = G_reader_settings:readSetting("home_dir") or "/"
     local depth      = G_reader_settings:readSetting("bookshelf_latest_walk_depth") or 3
     local candidates = cachedWalk(home, depth)
+    -- Tana hides manga chapter files from "Latest" so a fresh manga sync
+    -- doesn't bury every other newly-added book under 200 .cbz entries.
+    -- Filter BEFORE the sort so total counts (used for pagination) reflect
+    -- the visible-to-user set.
+    local tm = getTanaManga()
+    if tm and tm.hideChaptersEnabled() then
+        local kept = {}
+        for _, c in ipairs(candidates) do
+            if not tm.isChapterFile(c.fp) then kept[#kept + 1] = c end
+        end
+        candidates = kept
+    end
     -- "latest" chip is mtime-only by design (_SORT_VALID restricts it).
     -- Newest first.
     table.sort(candidates, function(a, b) return a.mtime > b.mtime end)
@@ -864,6 +937,54 @@ function Repo.getLatest(limit, offset)
     end
     logger.dbg(string.format("[bookshelf perf] getLatest: %.0fms cands=%d items=%d/%d",
         (_gettime() - _t0) * 1000, #candidates, #out, total))
+    return out, total
+end
+
+-- ─── getMangaCollections ─────────────────────────────────────────────────────
+-- Returns the manga-collection cards for the dedicated Manga chip. One
+-- entry per direct child folder of every configured manga root, sorted
+-- by most-recently-read-chapter (or alpha for never-opened series).
+-- Each shape includes a hydrated cover Book record drawn from the first
+-- chapter, plus the chapter_count badge override.
+
+function Repo.getMangaCollections(limit, offset)
+    local _t0 = _gettime()
+    local tm = getTanaManga()
+    if not tm then return {}, 0 end
+    offset = offset or 0
+    local raw = tm.listCollections() or {}
+    -- Build shapes BEFORE the slice so sorting reflects total population.
+    local rh = getReadHistory()
+    local recency = {}
+    if rh and rh.hist then
+        for _, h in ipairs(rh.hist) do
+            if not h.dim and h.file then
+                local coll = tm.collectionFor(h.file)
+                if coll and not recency[coll] then
+                    recency[coll] = h.time
+                end
+            end
+        end
+    end
+    table.sort(raw, function(a, b)
+        local ra = recency[a.path] or 0
+        local rb = recency[b.path] or 0
+        if ra ~= rb then return ra > rb end
+        return a.label < b.label
+    end)
+    local total = #raw
+    local out = {}
+    local stop = limit and math.min(offset + limit, total) or total
+    for i = offset + 1, stop do
+        local c = raw[i]
+        local shape = tm.buildCollectionShape(c.path, c.label, _safeBuildBookMeta)
+        if shape then
+            shape.last_read_time = recency[c.path]
+            out[#out + 1] = shape
+        end
+    end
+    logger.dbg(string.format("[bookshelf perf] getMangaCollections: %.0fms items=%d/%d",
+        (_gettime() - _t0) * 1000, #out, total))
     return out, total
 end
 
@@ -1008,18 +1129,189 @@ end
 -- limit/offset let callers fetch a single page slice without hydrating the
 -- full list. total is always the full item count (from cache or fresh scan)
 -- so callers can compute total_pages without a second trip.
+-- ─── Tana Home flat-list ────────────────────────────────────────────────────
+-- The "Home" chip used to behave like a file manager — listing direct
+-- children of home_dir, with folder cards to drill into. The user wants a
+-- LIBRARY view instead: every book in the library, flat, sorted, with manga
+-- collections folded into a single card each. Folders are out of the model
+-- entirely on Home; drill-down still works for anyone who reaches a folder
+-- path via a different code path.
+--
+-- Shape cache mirrors the original getAll: shape entries are lightweight
+-- (filepath OR manga-collection path), hydration to a renderable Book /
+-- collection card runs only for the visible slice.
+function Repo._getHomeFlat(home, limit, offset)
+    local _t0 = _gettime()
+    offset = offset or 0
+    local sort_key = Repo.getSortKey("all")
+    local reverse  = G_reader_settings:readSetting("bookshelf_sort_all_reverse") == true
+    local cache_key = "HOME\0" .. home .. "\0" .. sort_key .. "\0" .. (reverse and "R" or "")
+    local now   = os.time()
+    local entry = _all_cache[cache_key]
+    if entry and entry.expires_at > now then
+        -- HIT: hydrate slice only.
+        local total = #entry.shapes
+        local out   = {}
+        local stop  = limit and math.min(offset + limit, total) or total
+        local tm_hit = getTanaManga()
+        for i = offset + 1, stop do
+            local shape = entry.shapes[i]
+            if shape.kind == "manga" and tm_hit then
+                out[#out + 1] = tm_hit.buildCollectionShape(
+                    shape.path, shape.label, _safeBuildBookMeta)
+            else
+                local b = _safeBuildBookMeta(shape.fp)
+                if b then out[#out + 1] = b end
+            end
+        end
+        logger.dbg(string.format("[tana] HomeFlat HIT hydrate=%.0fms items=%d/%d",
+            (_gettime() - _t0) * 1000, #out, total))
+        return out, total
+    end
+
+    -- MISS: recursive walk + filter + manga-fold + sort.
+    local depth      = G_reader_settings:readSetting("bookshelf_latest_walk_depth") or 3
+    local candidates = cachedWalk(home, depth)
+    local tm = getTanaManga()
+    -- Bucket: regular book files (excluding chapters), with the data each
+    -- sort comparator needs already attached. Reuses the existing
+    -- _makeAllSort comparator family — entries mirror the lfs-entry shape
+    -- it expects (name, fp, attr, doc_props, _last_read, _pct, _status).
+    local entries = {}
+    for _, c in ipairs(candidates) do
+        if not (tm and tm.isChapterFile(c.fp)) then
+            local name = c.fp:match("([^/]+)$") or c.fp
+            entries[#entries + 1] = {
+                kind = "book",
+                name = name,
+                fp   = c.fp,
+                attr = { mode = "file", modification = c.mtime, size = 0 },
+            }
+        end
+    end
+    -- Manga collection shape entries — one per direct child of every
+    -- configured manga root. Each gets the same .attr shape so the
+    -- comparator can use modification time / name fall-through paths.
+    if tm then
+        for _, c in ipairs(tm.listCollections()) do
+            entries[#entries + 1] = {
+                kind  = "manga",
+                name  = c.label,
+                path  = c.path,
+                label = c.label,
+                attr  = { mode = "directory", modification = 0, size = 0 },
+                doc_props = { display_title = c.label },
+            }
+        end
+    end
+
+    -- Pre-fetch sort data — same logic as the existing folder-aware getAll
+    -- but applied to the flat library set.
+    local needs_titles  = sort_key == "title" or sort_key == "natural"
+                          or sort_key == "percent_natural"
+    local needs_percent = sort_key == "percent_unopened_first"
+                          or sort_key == "percent_unopened_last"
+                          or sort_key == "percent_natural"
+    if needs_titles then
+        local light_cache = _getLightMetaCache(home, depth)
+        local bim = getBookInfoMgr()
+        for _, e in ipairs(entries) do
+            if e.kind == "book" then
+                local title
+                if light_cache then
+                    local cached = light_cache[e.fp]
+                    if cached and cached.title then title = cached.title end
+                end
+                if not title then
+                    local ok, info = pcall(bim.getBookInfo, bim, e.fp, false)
+                    if ok and info and info.title and info.title ~= "" then
+                        title = info.title
+                    end
+                end
+                e.doc_props = { display_title = title or e.name }
+            end
+            -- manga entries already have doc_props set above
+        end
+    end
+    if sort_key == "last_read" then
+        local ReadHistory = require("readhistory")
+        local rh = {}
+        for _, item in ipairs(ReadHistory.hist) do rh[item.file] = item.time end
+        for _, e in ipairs(entries) do
+            if e.kind == "book" then
+                e._last_read = rh[e.fp] or 0
+            elseif e.kind == "manga" and tm then
+                -- Most-recent chapter read counts as "last read" for the
+                -- collection so the card bubbles to the top after a recent
+                -- read, matching the Recent-chip fold.
+                local best = 0
+                for fp, t in pairs(rh) do
+                    if tm.collectionFor(fp) == e.path and t > best then best = t end
+                end
+                e._last_read = best
+            end
+        end
+    end
+    if needs_percent then
+        for _, e in ipairs(entries) do
+            if e.kind == "book" then
+                local pct, status = Repo.readProgress(e.fp)
+                e._pct, e._status = pct, status
+            end
+        end
+    end
+
+    table.sort(entries, _makeAllSort(sort_key))
+    if reverse then
+        local n = #entries
+        for i = 1, math.floor(n / 2) do
+            entries[i], entries[n - i + 1] = entries[n - i + 1], entries[i]
+        end
+    end
+
+    -- Build shapes; cache the full ordered list and hydrate just the slice.
+    local shapes = {}
+    for _, e in ipairs(entries) do
+        if e.kind == "manga" then
+            shapes[#shapes + 1] = { kind = "manga", path = e.path, label = e.label }
+        else
+            shapes[#shapes + 1] = { kind = "book", fp = e.fp }
+        end
+    end
+    local total = #shapes
+    _all_cache[cache_key] = { shapes = shapes, expires_at = now + WALK_CACHE_TTL }
+
+    local out  = {}
+    local stop = limit and math.min(offset + limit, total) or total
+    for i = offset + 1, stop do
+        local shape = shapes[i]
+        if shape.kind == "manga" and tm then
+            out[#out + 1] = tm.buildCollectionShape(shape.path, shape.label, _safeBuildBookMeta)
+        else
+            local b = _safeBuildBookMeta(shape.fp)
+            if b then out[#out + 1] = b end
+        end
+    end
+    logger.dbg(string.format("[tana] HomeFlat MISS build=%.0fms items=%d/%d sort=%s",
+        (_gettime() - _t0) * 1000, #out, total, sort_key))
+    return out, total
+end
+
 function Repo.getAll(path, limit, offset)
     local _t0 = _gettime()
     offset = offset or 0
-    -- Explicit `path` (folder drilldown) wins; fallback resolves the
-    -- user's library root and bails when it's unconfigured rather than
-    -- walking "/".
+    -- Tana Home view: when no explicit path is passed, the user is on the
+    -- "Home" chip. We return a FLAT list of every book in the library plus
+    -- one card per manga collection — no folder cards, no drill-in concept.
+    -- (Drill-downs reach this function with a non-nil path and stay on
+    -- the original folder-aware code path below.)
     if not path then
-        path = _resolveLibraryRoot()
-        if not path then
+        local home = _resolveLibraryRoot()
+        if not home then
             logger.warn("[bookshelf] getAll: home_dir not configured; refusing to walk")
             return {}, 0
         end
+        return Repo._getHomeFlat(home, limit, offset)
     end
     local sort_key = Repo.getSortKey("all")
     local reverse  = G_reader_settings:readSetting("bookshelf_sort_all_reverse") == true
@@ -1035,9 +1327,13 @@ function Repo.getAll(path, limit, offset)
         local total = #entry.shapes
         local out   = {}
         local stop  = limit and math.min(offset + limit, total) or total
+        local tm_hit = getTanaManga()
         for i = offset + 1, stop do
             local shape = entry.shapes[i]
-            if shape.kind == "folder" then
+            if shape.kind == "manga" and tm_hit then
+                out[#out + 1] = tm_hit.buildCollectionShape(
+                    shape.path, shape.label, _safeBuildBookMeta)
+            elseif shape.kind == "folder" then
                 local fb = shape.first_book_fp and _safeBuildBookMeta(shape.first_book_fp)
                 out[#out + 1] = {
                     kind       = "folder",
@@ -1190,6 +1486,8 @@ function Repo.getAll(path, limit, offset)
     -- doing 200 SQLite round-trips just to build the sort cache. Now only the
     -- current page slice (PAGE_SIZE items) triggers BIM lookups, via the
     -- hydration pass below (same code path as the HIT branch).
+    local tm_all = getTanaManga()
+    local listing_is_manga_root = tm_all and tm_all.isMangaRoot(path)
     local shapes = {}
     for _, e in ipairs(ordered_entries) do
         if e.attr.mode == "file" then
@@ -1198,14 +1496,24 @@ function Repo.getAll(path, limit, offset)
                 shapes[#shapes + 1] = { kind = "book", fp = e.fp }
             end
         elseif e.attr.mode == "directory" then
-            -- findFirstBookIn now returns just the filepath; per-page
-            -- hydration below builds the actual Book record with cover.
-            shapes[#shapes + 1] = {
-                kind          = "folder",
-                path          = e.fp,
-                label         = e.name,
-                first_book_fp = Repo.findFirstBookIn(e.fp, 3),
-            }
+            if listing_is_manga_root then
+                -- Direct child of a manga root → manga collection card.
+                -- Hydration looks up first_chapter cover at page-build time.
+                shapes[#shapes + 1] = {
+                    kind          = "manga",
+                    path          = e.fp,
+                    label         = e.name,
+                }
+            else
+                -- findFirstBookIn now returns just the filepath; per-page
+                -- hydration below builds the actual Book record with cover.
+                shapes[#shapes + 1] = {
+                    kind          = "folder",
+                    path          = e.fp,
+                    label         = e.name,
+                    first_book_fp = Repo.findFirstBookIn(e.fp, 3),
+                }
+            end
         end
     end
     local total = #shapes
@@ -1215,7 +1523,10 @@ function Repo.getAll(path, limit, offset)
     local stop = limit and math.min(offset + limit, total) or total
     for i = offset + 1, stop do
         local shape = shapes[i]
-        if shape.kind == "folder" then
+        if shape.kind == "manga" and tm_all then
+            out[#out + 1] = tm_all.buildCollectionShape(
+                shape.path, shape.label, _safeBuildBookMeta)
+        elseif shape.kind == "folder" then
             local fb = shape.first_book_fp and _safeBuildBookMeta(shape.first_book_fp)
             out[#out + 1] = {
                 kind       = "folder",
@@ -1442,9 +1753,13 @@ end
 local function hydrateSeriesShape(shape)
     local books = {}
     for i, fp in ipairs(shape.filepaths) do
-        if i <= 1 then
-            -- Full BIM hydration: cover_bb for the single front cover rendered
-            -- by SeriesStack. Only one cover is visible per group on the shelf.
+        if i <= 4 then
+            -- Full BIM hydration: cover_bb for the first 4 covers. Tana's
+            -- 2×2 mosaic needs all four to render with thumbnails; legacy
+            -- single-cover rendering still works (it just ignores books[2..]).
+            -- Cost is ~4× the old (4 SQLite + zstd vs 1), but the ScaledCoverCache
+            -- catches the same covers across pages and the cap of 4 per group
+            -- bounds the total per chip rebuild.
             local b = Repo.buildBookMeta(fp)
             if b then books[#books + 1] = b end
         else

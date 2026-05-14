@@ -23,9 +23,11 @@ local Size            = require("ui/size")
 local Font            = require("ui/font")
 local Blitbuffer      = require("ffi/blitbuffer")
 local Screen          = require("device").screen
-local SpineWidget     = require("bookshelf_spine_widget")
-local SeriesStack     = require("bookshelf_series_stack")
-local FolderStack     = require("bookshelf_folder_stack")
+local SpineWidget       = require("bookshelf_spine_widget")
+local SeriesStack       = require("bookshelf_series_stack")
+local FolderStack       = require("bookshelf_folder_stack")
+local TanaSeriesMosaic  = require("tana_series_mosaic")
+local TanaMangaCard     = require("tana_manga_card")
 
 local ShelfRow = {}
 
@@ -142,6 +144,19 @@ function ShelfRow.new(opts)
                 is_selected = opts.selected_filepath and item.first_book
                               and item.first_book.filepath == opts.selected_filepath,
             })
+        elseif item and item.kind == "manga" then
+            -- Manga collection card: TanaMangaCard renders just the
+            -- first chapter cover + a bottom title strip + a corner
+            -- count badge. No cardboard folder overlay — a manga
+            -- collection reads as one entity, not "books inside a
+            -- folder". Taps route to the action sheet via on_manga_tap.
+            row[#row + 1] = wrap_for_title_alignment(TanaMangaCard:new{
+                coll    = item,
+                width   = slot_w,
+                height  = non_book_h,
+                on_tap  = opts.on_manga_tap,
+                on_hold = opts.on_manga_hold,
+            })
         elseif item and item.kind == "author" then
             -- Author group (SeriesStack visual, author name on the band)
             row[#row + 1] = wrap_for_title_alignment(SeriesStack:new{
@@ -179,15 +194,37 @@ function ShelfRow.new(opts)
         elseif item and item.books then
             -- SeriesGroup (has a .books array; legacy detection — kind
             -- not always set on series records).
-            row[#row + 1] = wrap_for_title_alignment(SeriesStack:new{
-                series      = item,
-                width       = slot_w,
-                height      = non_book_h,
-                on_tap      = opts.on_series_tap,
-                on_hold     = opts.on_series_hold,
-                is_selected = opts.selected_filepath and item.books and item.books[1]
-                              and item.books[1].filepath == opts.selected_filepath,
-            })
+            --
+            -- Tana: if the group has at least 2 books with covers, render
+            -- a 2×2 cover mosaic via TanaSeriesMosaic. Single-book groups
+            -- (rare; usually a Calibre-tagged standalone with a series
+            -- field) fall back to the original single-cover SeriesStack
+            -- so geometry doesn't crash on an empty mosaic.
+            local cover_count = 0
+            for _, b in ipairs(item.books) do
+                if b and b.cover_bb then cover_count = cover_count + 1 end
+            end
+            local widget
+            if cover_count >= 2 then
+                widget = TanaSeriesMosaic:new{
+                    series = item,
+                    width  = slot_w,
+                    height = non_book_h,
+                    on_tap = opts.on_series_tap,
+                    on_hold = opts.on_series_hold,
+                }
+            else
+                widget = SeriesStack:new{
+                    series      = item,
+                    width       = slot_w,
+                    height      = non_book_h,
+                    on_tap      = opts.on_series_tap,
+                    on_hold     = opts.on_series_hold,
+                    is_selected = opts.selected_filepath and item.books and item.books[1]
+                                  and item.books[1].filepath == opts.selected_filepath,
+                }
+            end
+            row[#row + 1] = wrap_for_title_alignment(widget)
         elseif item then
             -- Single book record
             local spine = SpineWidget:new{
@@ -207,6 +244,11 @@ function ShelfRow.new(opts)
                 -- Hero card, folder stacks, and series stacks reuse
                 -- SpineWidget for the underlying cover but opt out.
                 show_progress = true,
+                -- Tana: Home (flat list) hides the "#N" series badge
+                -- since every card is a standalone book in that view —
+                -- the number reads as visual noise when there's no
+                -- series context. Other chips keep the badge.
+                hide_series_num = opts.hide_series_num,
                 -- Plumb expanded-mode flag so SpineWidget can lift the
                 -- bookmark glyph fully inside the cover (avoiding clash
                 -- with the title text below). Regular mode lets it dangle.

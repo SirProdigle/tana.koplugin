@@ -28,16 +28,19 @@ local Regions         = require("bookshelf_hero_regions")
 local HeroBar         = require("bookshelf_hero_bar")
 
 local HeroCard = InputContainer:extend{
-    book         = nil,
-    width        = nil,
-    height       = nil,
-    cover_w      = 116,
-    cover_h      = nil,
-    pad          = nil,
-    device_state = nil,
-    on_tap       = nil,
-    on_hold      = nil,
-    is_selected  = false,
+    book           = nil,
+    width          = nil,
+    height         = nil,
+    cover_w        = 116,
+    cover_h        = nil,
+    pad            = nil,
+    device_state   = nil,
+    on_tap         = nil,
+    on_hold        = nil,
+    -- Tana: tap callback for the file-browser glyph rendered in the
+    -- top-right of the status strip. nil → no glyph rendered.
+    on_filebrowser = nil,
+    is_selected    = false,
 }
 
 -- Reads the user's font-scale setting (% of nominal). Applied on top of
@@ -232,6 +235,62 @@ local function buildProgressLine(expanded, region, width, book)
     return hg
 end
 
+-- Tana: build the small file-browser glyph that sits at the right edge of
+-- the status strip. Returns (widget, width). Widget is nil when no
+-- on_filebrowser callback was passed (so non-home contexts don't render
+-- the icon by accident). Tap on the glyph fires the callback — callers
+-- typically close Tana and navigate FileManager to home_dir.
+--
+-- Why a nerd-font glyph rather than IconWidget: KOReader's xtext pipeline
+-- already falls back to fonts/nerdfonts/symbols.ttf for any codepoint
+-- outside infofont's range. We get a bold, anti-aliased folder shape with
+-- a single TextWidget — no PNG / SVG / icon-pack registration required,
+-- and the colour follows the surrounding text (no theme baggage). Same
+-- approach the chip strip uses for its "currently reading" / "search"
+-- glyphs.
+local FILE_BROWSER_GLYPH = "\xEF\x81\xBC"  -- Nerd Font fa-folder-open (U+F07C)
+
+function HeroCard:_buildFileBrowserButton(status_region)
+    if not self.on_filebrowser then return nil, 0 end
+    local face = regionFace(status_region)
+    -- Match the status text size, just slightly chunkier so the glyph
+    -- reads as a button. Nerd fonts render at the same point size as
+    -- text, so re-using the face here makes the icon align with the
+    -- text baseline naturally.
+    local glyph = TextWidget:new{
+        text    = FILE_BROWSER_GLYPH,
+        face    = face,
+        fgcolor = Blitbuffer.COLOR_BLACK,
+    }
+    local glyph_w = glyph:getSize().w
+    local glyph_h = glyph:getSize().h
+    -- Hit box: pad each side so the small glyph is comfortable to tap
+    -- on a fingerprinted touchscreen. The FrameContainer is invisible
+    -- (bordersize=0, background nil); only the inner glyph paints.
+    local hit_pad = Size.padding.small
+    local frame_w = glyph_w + hit_pad * 2
+    local frame_h = glyph_h + hit_pad * 2
+    local frame_dimen = Geom:new{ w = frame_w, h = frame_h }
+    local btn = InputContainer:new{
+        dimen = frame_dimen,
+        FrameContainer:new{
+            dimen      = frame_dimen,
+            bordersize = 0,
+            padding    = hit_pad,
+            glyph,
+        },
+    }
+    local cb = self.on_filebrowser
+    btn.ges_events = {
+        Tap = { GestureRange:new{ ges = "tap", range = frame_dimen } },
+    }
+    btn.onTap = function()
+        if cb then cb() end
+        return true
+    end
+    return btn, frame_w + Size.padding.default
+end
+
 -- _buildRightColumn(book, regions, state, dimen) — builds the OverlapGroup
 -- that lives to the right of the cover. Both _renderFull and the live
 -- preview path call this so renders stay structurally identical.
@@ -251,17 +310,37 @@ function HeroCard:_buildRightColumn(book, regions, state, dimen)
     if not regions.status.disabled then
         local status_text = Tokens.expand(regions.status.template, book, state)
         status_text = status_text:gsub("%[/?[biu]%]", "")
-        if not Tokens.isEmpty(status_text) then
-            local status_widget = buildText(status_text, regions.status, right_w)
+        local fb_btn, fb_width = self:_buildFileBrowserButton(regions.status)
+        if not Tokens.isEmpty(status_text) or fb_btn then
+            local status_widget = buildText(status_text, regions.status,
+                right_w - fb_width)
+            local row_widget
+            if fb_btn then
+                -- Compose [status text .... folder icon] so the glyph sits
+                -- at the right edge of the strip without disturbing the
+                -- existing text alignment / template behaviour.
+                row_widget = HorizontalGroup:new{
+                    align = "center",
+                    status_widget,
+                    HorizontalSpan:new{ width = Size.padding.default },
+                    fb_btn,
+                }
+            else
+                row_widget = status_widget
+            end
             local hairline_widget = LineWidget:new{
                 dimen      = Geom:new{ w = right_w, h = Size.line.medium },
                 background = Blitbuffer.gray(0.4),
             }
             local gap_widget = VerticalSpan:new{ width = Size.padding.default }
-            right_top[#right_top + 1] = status_widget
+            right_top[#right_top + 1] = row_widget
             right_top[#right_top + 1] = hairline_widget
             right_top[#right_top + 1] = gap_widget
-            self._status_strip_widgets = { status_widget, hairline_widget, gap_widget }
+            -- Track the COMPOSITE row so the minute-tick refresh repaints
+            -- both the status text AND the folder icon together. The icon
+            -- itself doesn't change, but partial-refresh footprints have
+            -- to include the row's full extent.
+            self._status_strip_widgets = { row_widget, hairline_widget, gap_widget }
         end
     end
 
