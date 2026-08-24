@@ -744,7 +744,7 @@ function BookshelfWidget:_rebuild()
             self.page            = 1
             G_reader_settings:saveSetting("bookshelf_active_chip", key)
             self:_rebuild()
-            UIManager:setDirty(self, self:_shelfRefreshMode())
+            UIManager:setDirty(self, "ui")
         end,
         on_breadcrumb = function(depth)
             -- depth -1 = back pill (search mode only): exit search
@@ -2081,32 +2081,18 @@ end
 -- never change with self.page; the hero only changes with _preview_book)
 -- AND avoids the use-after-free path where _buildHero rebuilds a SpineWidget
 -- against a freed BIM bb on _preview_book.cover_bb.
--- E-ink hygiene: shelf transitions (page flips, chip switches) repaint with
--- "ui" (no flash), so ghosting accumulates while browsing. Every Nth
--- transition returns "flashui" instead — one clean black flash, mirroring
--- the reader's every-N-pages full refresh.
-local SHELF_FLASH_EVERY = 5
-function BookshelfWidget:_shelfRefreshMode()
-    self._shelf_paint_count = (self._shelf_paint_count or 0) + 1
-    if self._shelf_paint_count >= SHELF_FLASH_EVERY then
-        self._shelf_paint_count = 0
-        return "flashui"
-    end
-    return "ui"
-end
-
 function BookshelfWidget:_swapShelvesInPlace()
     local _perf_t0 = _gettime()
     if not self._inner_vgroup or not self._shelf_dims then
         self:_rebuild()
-        UIManager:setDirty(self, self:_shelfRefreshMode())
+        UIManager:setDirty(self, "ui")
         return
     end
     -- Fast path only handles the 2-row (standard, non-expanded) layout.
     -- Expanded mode and tall screens use more rows; fall back to _rebuild.
     if self:_nShelves() ~= 2 then
         self:_rebuild()
-        UIManager:setDirty(self, self:_shelfRefreshMode())
+        UIManager:setDirty(self, "ui")
         return
     end
     local d = self._shelf_dims
@@ -2132,7 +2118,7 @@ function BookshelfWidget:_swapShelvesInPlace()
         -- Going to empty state needs a structural change (hero + chips +
         -- placeholder, no shelves) — fall back to full rebuild.
         self:_rebuild()
-        UIManager:setDirty(self, self:_shelfRefreshMode())
+        UIManager:setDirty(self, "ui")
         return
     end
     local items
@@ -2184,7 +2170,7 @@ function BookshelfWidget:_swapShelvesInPlace()
     end)
     logger.dbg(string.format("[bookshelf perf] _swapShelves: TOTAL=%.0fms page=%d/%d",
         (_gettime() - _perf_t0) * 1000, self.page, self._total_pages or 0))
-    UIManager:setDirty(self, self:_shelfRefreshMode())
+    UIManager:setDirty(self, "ui")
 end
 
 -- softRefresh — lightweight return-to-bookshelf update. Splits the work
