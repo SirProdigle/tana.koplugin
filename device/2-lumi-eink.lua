@@ -1,0 +1,175 @@
+-- 2-lumi-eink.lua
+--
+-- E-ink waveform control for the Onyx Boox Go 10.3 Gen II ("Lumi",
+-- model go103_2lumi). KOReader v2026.07.1's launcher doesn't recognise
+-- this model, so EPDFactory hands it the no-op EPD controller:
+-- android.einkUpdate() does nothing, every KOReader "full refresh" is
+-- silently dropped, and all panel updates run with whatever fast waveform
+-- Onyx's EAC picks for an unmanaged app. Result: heavy ghosting that even
+-- apparent flashes don't clear, because no GC16 is ever actually requested.
+--
+-- This patch reimplements what KOReader's OnyxEPDController (via
+-- QualcommEPDController) does on recognised models: after each buffer
+-- blit, call the Onyx framework's View.refreshScreen(x, y, w, h, mode) —
+-- a PUBLIC method on this firmware — with the proper waveform:
+--   full          = UPDATE_FULL + WAIT + GC16  (deep-clean flash)
+--   flash UI      = UPDATE_FULL + REAGL
+--   partial / UI  = GC16 partial (high quality, no flash)
+--   fast          = DU
+-- (setWaveformAndScheme/preventSystemRefresh no longer exists on this
+-- firmware; refreshScreen alone re-refreshes the region with the wanted
+-- waveform after the surface frame lands, hence the small delays — same
+-- values the launcher uses.)
+--
+-- Remove this patch (and 2-lumi-frontlight.lua) once upstream KOReader
+-- ships go103_2lumi support (android-luajit-launcher PR #613).
+
+local ok_android, android = pcall(require, "android")
+if not ok_android or type(android) ~= "table" or not android.prop then return end
+
+local product = tostring(android.prop.product or ""):lower()
+if product ~= "go103_2lumi" then return end
+
+local ffi = require("ffi")
+local logger = require("logger")
+
+-- Waveform constants (QualcommEPDController + OnyxEPDController combos).
+local UPDATE_FULL = 32
+local MODE_WAIT   = 64
+local MODE_DU     = 1
+local MODE_GC16   = 2
+local MODE_REAGL  = 6
+
+local WF_FULL       = UPDATE_FULL + MODE_WAIT + MODE_GC16 -- 98
+local WF_FLASH_UI   = UPDATE_FULL + MODE_REAGL            -- 38
+local WF_PARTIAL    = MODE_GC16                           -- 2
+local WF_FAST       = MODE_DU                             -- 1
+
+local DELAY_PAGE = 0.25  -- s; launcher's EINK_WAVEFORM_DELAY
+local DELAY_UI   = 0.10  -- s; EINK_WAVEFORM_DELAY_UI
+local DELAY_FAST = 0     -- EINK_WAVEFORM_DELAY_FAST
+
+-- Same attach/detach-per-call JNI pattern as 2-lumi-frontlight.lua.
+local function jni_call(runnable)
+    local jvm = android.app.activity.vm
+    local env = ffi.new("JNIEnv*[1]")
+    jvm[0].GetEnv(jvm, ffi.cast("void**", env), ffi.C.JNI_VERSION_1_6)
+    if jvm[0].AttachCurrentThread(jvm, env, nil) == ffi.C.JNI_ERR then
+        return nil
+    end
+    local e = env[0]
+    local ok, result = pcall(runnable, e)
+    if e[0].ExceptionCheck(e) == 1 then
+        e[0].ExceptionClear(e)
+        ok = false
+    end
+    jvm[0].DetachCurrentThread(jvm)
+    if not ok then return nil end
+    return result
+end
+
+-- activity.getWindow().getDecorView():refreshScreen(x, y, w, h, mode)
+-- Every int MUST be wrapped in ffi.new("int32_t", ...): variadic JNI args
+-- promote plain Lua numbers to double (the frontlight patch's lesson).
+local function refresh_screen(x, y, w, h, mode)
+    return jni_call(function(e)
+        local act = android.app.activity.clazz
+        local actC = e[0].GetObjectClass(e, act)
+        local mWindow = e[0].GetMethodID(e, actC, "getWindow", "()Landroid/view/Window;")
+        if mWindow == nil then error("getWindow not found") end
+        local win = e[0].CallObjectMethod(e, act, mWindow)
+        if win == nil then error("no window") end
+        local winC = e[0].GetObjectClass(e, win)
+        local mDecor = e[0].GetMethodID(e, winC, "getDecorView", "()Landroid/view/View;")
+        local decor = e[0].CallObjectMethod(e, win, mDecor)
+        if decor == nil then error("no decor view") end
+        local viewC = e[0].GetObjectClass(e, decor)
+        local mRefresh = e[0].GetMethodID(e, viewC, "refreshScreen", "(IIIII)V")
+        if mRefresh == nil then error("View.refreshScreen(IIIII) not found") end
+        e[0].CallVoidMethod(e, decor, mRefresh,
+            ffi.new("int32_t", x), ffi.new("int32_t", y),
+            ffi.new("int32_t", w), ffi.new("int32_t", h),
+            ffi.new("int32_t", mode))
+        e[0].DeleteLocalRef(e, viewC)
+        e[0].DeleteLocalRef(e, decor)
+        e[0].DeleteLocalRef(e, winC)
+        e[0].DeleteLocalRef(e, win)
+        e[0].DeleteLocalRef(e, actC)
+        return true
+    end)
+end
+
+local Device = require("device")
+local Screen = Device.screen
+
+-- Sanity-probe once: if refreshScreen is missing on this firmware, leave
+-- the stock (no-op) behaviour alone rather than break rendering.
+local probe = refresh_screen(0, 0, Screen:getWidth(), Screen:getHeight(), WF_FULL)
+if not probe then
+    logger.warn("2-lumi-eink: View.refreshScreen unavailable; patch inactive")
+    return
+end
+logger.info("2-lumi-eink: Onyx EPD refresh wired (View.refreshScreen)")
+
+-- Schedule the waveform refresh shortly after the frame is posted, like
+-- the launcher's delayed thread. Falls back to an immediate call if
+-- UIManager isn't up yet (early boot paints).
+local function request(mode, delay, x, y, w, h)
+    -- Clamp/transform to physical coords the same way _updatePartial does.
+    local bb = Screen.full_bb or Screen.bb
+    if bb then
+        x, y, w, h = bb:getBoundedRect(x or 0, y or 0,
+                                       w or Screen:getWidth(), h or Screen:getHeight())
+        x, y, w, h = bb:getPhysicalRect(x, y, w, h)
+    else
+        x, y = x or 0, y or 0
+        w, h = w or Screen:getWidth(), h or Screen:getHeight()
+    end
+    local fire = function()
+        refresh_screen(x, y, w, h, mode)
+    end
+    if delay and delay > 0 then
+        local ok_ui, UIManager = pcall(require, "ui/uimanager")
+        if ok_ui and UIManager and UIManager.scheduleIn then
+            UIManager:scheduleIn(delay, fire)
+            return
+        end
+    end
+    fire()
+end
+
+-- Replace the no-op refresh implementations (framebuffer_android skips
+-- android.einkUpdate entirely when the launcher reports no eink support).
+function Screen:refreshFullImp(x, y, w, h)
+    self:_updateWindow()
+    request(WF_FULL, DELAY_PAGE, 0, 0, self:getWidth(), self:getHeight())
+end
+
+function Screen:refreshPartialImp(x, y, w, h)
+    self:_updateWindow()
+    request(WF_PARTIAL, DELAY_PAGE, x, y, w, h)
+end
+
+function Screen:refreshFlashPartialImp(x, y, w, h)
+    self:_updateWindow()
+    request(WF_FULL, DELAY_PAGE, x, y, w, h)
+end
+
+function Screen:refreshUIImp(x, y, w, h)
+    self:_updateWindow()
+    request(WF_PARTIAL, DELAY_UI, x, y, w, h)
+end
+
+function Screen:refreshFlashUIImp(x, y, w, h)
+    self:_updateWindow()
+    request(WF_FLASH_UI, DELAY_UI, x, y, w, h)
+end
+
+function Screen:refreshFastImp(x, y, w, h)
+    self:_updateWindow()
+    request(WF_FAST, DELAY_FAST, x, y, w, h)
+end
+
+-- Let KOReader know it really has an e-ink screen now: unlocks the E-ink
+-- settings menu (full refresh rate etc.) and flash-aware UI behaviour.
+Device.hasEinkScreen = function() return true end
