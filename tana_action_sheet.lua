@@ -75,6 +75,24 @@ function TanaActionSheet.show(opts)
         }
     end
 
+    -- "Continue from server" — only for collections Maki manages (they
+    -- carry a .maki.lua marker). Queries Komga's read progress on tap, so
+    -- reading done on other devices (Kindle page-streaming) is offered as
+    -- a starting point here.
+    do
+        local ok, TanaKomga = pcall(require, "tana_komga_progress")
+        if ok and TanaKomga.hasMarker(opts.coll_path) then
+            rows[#rows + 1] = {
+                {
+                    text     = TanaKomga.buttonLabel(),
+                    callback = closing(function()
+                        TanaKomga.continueFromServer(opts.coll_path, opts.on_open)
+                    end),
+                },
+            }
+        end
+    end
+
     rows[#rows + 1] = {
         {
             text     = _("Browse chapters"),

@@ -1,0 +1,229 @@
+-- tana_komga_progress.lua
+-- "Continue from server" for manga collections: asks the Komga server where
+-- the user last left off in a series (progress accumulated from OTHER
+-- devices — e.g. page-streamed reading on the Kindle reports back to Komga)
+-- and maps that chapter to the locally downloaded file.
+--
+-- Everything hangs off the per-series `.maki.lua` marker that Maki's
+-- "Download all here" writes: it holds the series' OPDS feed URL (which
+-- embeds the Komga series id) and an acquisition-URL → local-filename map
+-- (acquisition URLs embed book ids). Server credentials are borrowed from
+-- Maki's own settings file, so there is nothing new to configure.
+--
+-- Soft dependency: collections without a marker (or without a matching
+-- Maki server entry) simply don't get the button.
+
+local DataStorage = require("datastorage")
+local DocSettings = require("docsettings")
+local lfs         = require("libs/libkoreader-lfs")
+local logger      = require("logger")
+local ltn12       = require("ltn12")
+local mime        = require("mime")
+local socket      = require("socket")
+local socketutil  = require("socketutil")
+local http        = require("socket.http")
+
+local M = {}
+
+local function readMarker(coll_path)
+    local ok, marker = pcall(dofile, coll_path .. "/.maki.lua")
+    if ok and type(marker) == "table" and marker.feed and marker.catalog then
+        return marker
+    end
+    return nil
+end
+
+function M.hasMarker(coll_path)
+    if not coll_path then return false end
+    return lfs.attributes(coll_path .. "/.maki.lua", "mode") == "file"
+end
+
+-- Find the Maki server entry whose URL matches the marker's catalog, for
+-- its username/password.
+local function findCredentials(catalog_url)
+    local LuaSettings = require("luasettings")
+    local path = DataStorage:getDataDir() .. "/settings/maki.lua"
+    local ok, cfg = pcall(function() return LuaSettings:open(path) end)
+    if not ok or not cfg then return nil end
+    local servers = cfg:readSetting("servers")
+    if type(servers) ~= "table" then return nil end
+    for _, srv in ipairs(servers) do
+        if srv.url == catalog_url
+           or (srv.url and catalog_url and srv.url:match("^https?://[^/]+")
+               == catalog_url:match("^https?://[^/]+")) then
+            return srv.username, srv.password
+        end
+    end
+    return nil
+end
+
+local function fetchJSON(url, username, password)
+    local sink = {}
+    socketutil:set_timeout(socketutil.LARGE_BLOCK_TIMEOUT, socketutil.LARGE_TOTAL_TIMEOUT)
+    local request = {
+        url     = url,
+        method  = "GET",
+        headers = {
+            ["Accept"] = "application/json",
+        },
+        sink    = ltn12.sink.table(sink),
+    }
+    if username then
+        request.headers["Authorization"] =
+            "Basic " .. mime.b64(username .. ":" .. (password or ""))
+    end
+    local code = socket.skip(1, http.request(request))
+    socketutil:reset_timeout()
+    if code ~= 200 then
+        logger.warn("tana_komga_progress: HTTP", code, "for", url)
+        return nil
+    end
+    local body = table.concat(sink)
+    local ok, parsed
+    local ok_rj, rapidjson = pcall(require, "rapidjson")
+    if ok_rj then
+        ok, parsed = pcall(rapidjson.decode, body)
+    else
+        local ok_j, json = pcall(require, "json")
+        if not ok_j then return nil end
+        ok, parsed = pcall(json.decode, body)
+    end
+    if not ok then return nil end
+    return parsed
+end
+
+-- Query the server for the series' continue point.
+-- Returns nil+reason, or a table:
+--   { number, name, book_id, page, in_progress (bool) }
+local function findContinuePoint(marker, username, password)
+    local base = marker.catalog:match("^(https?://[^/]+)")
+    local series_id = marker.feed:match("/series/([^/?#]+)")
+    if not base or not series_id then return nil, "no series id in marker" end
+    local url = string.format(
+        "%s/api/v1/series/%s/books?size=1000&sort=metadata.numberSort,asc",
+        base, series_id)
+    local data = fetchJSON(url, username, password)
+    if not data or type(data.content) ~= "table" then
+        return nil, "server unreachable"
+    end
+    local last_completed_idx, in_progress
+    for i, book in ipairs(data.content) do
+        local rp = book.readProgress
+        if type(rp) == "table" then
+            if rp.completed then
+                last_completed_idx = i
+            elseif not in_progress then
+                in_progress = { idx = i, page = rp.page }
+            end
+        end
+    end
+    local function shape(book, page, started)
+        return {
+            number      = (book.metadata and book.metadata.number) or book.number,
+            name        = book.name,
+            book_id     = book.id,
+            page        = page,
+            in_progress = started,
+        }
+    end
+    if in_progress then
+        return shape(data.content[in_progress.idx], in_progress.page, true)
+    end
+    if last_completed_idx then
+        local nxt = data.content[last_completed_idx + 1]
+        if nxt then return shape(nxt, nil, false) end
+        return nil, "series finished"
+    end
+    return nil, "no server progress"
+end
+
+-- Map a Komga book id to the locally downloaded file via the marker's
+-- fetched map (acquisition URLs embed "/books/<id>/"). Fall back to the
+-- normalised "Chapter %04d" name scheme.
+local function localFileFor(marker, coll_path, target)
+    if type(marker.fetched) == "table" then
+        for url, rec in pairs(marker.fetched) do
+            if url:find("/books/" .. target.book_id .. "/", 1, true)
+               and type(rec) == "table" and rec.file then
+                local fp = coll_path .. "/" .. rec.file
+                if lfs.attributes(fp, "mode") == "file" then return fp end
+            end
+        end
+    end
+    local num = tonumber(target.number)
+    if num then
+        local int = math.floor(num)
+        local frac = num - int
+        local name = frac > 0
+            and string.format("Chapter %04d.%g.cbz", int, frac * 10)
+            or  string.format("Chapter %04d.cbz", int)
+        local fp = coll_path .. "/" .. name
+        if lfs.attributes(fp, "mode") == "file" then return fp end
+    end
+    return nil
+end
+
+-- Seed the reader's starting page for a not-yet-opened file so a
+-- mid-chapter server position is honoured. Never touches an existing
+-- sidecar (local progress wins).
+local function seedPage(fp, page)
+    if not page or page <= 1 then return end
+    if DocSettings:hasSidecarFile(fp) then return end
+    local ok = pcall(function()
+        local ds = DocSettings:open(fp)
+        ds:saveSetting("last_page", page)
+        ds:flush()
+    end)
+    if not ok then logger.warn("tana_komga_progress: could not seed page for", fp) end
+end
+
+-- The action behind the sheet button. Shows its own progress/info UI and
+-- calls on_open(fp) when a local chapter file is resolved.
+function M.continueFromServer(coll_path, on_open)
+    local InfoMessage = require("ui/widget/infomessage")
+    local UIManager   = require("ui/uimanager")
+    local Trapper     = require("ui/trapper")
+    local _           = require("gettext")
+    local T           = require("ffi/util").template
+
+    Trapper:wrap(function()
+        Trapper:info(_("Checking reading progress on the server…"))
+        local marker = readMarker(coll_path)
+        if not marker then
+            Trapper:reset()
+            UIManager:show(InfoMessage:new{ text = _("No Maki marker for this series.") })
+            return
+        end
+        local username, password = findCredentials(marker.catalog)
+        local target, why = findContinuePoint(marker, username, password)
+        Trapper:reset()
+        if not target then
+            local msgs = {
+                ["no server progress"] = _("The server has no reading progress for this series."),
+                ["series finished"]    = _("Every chapter of this series is already marked read on the server."),
+                ["server unreachable"] = _("Could not reach the server (is Wi-Fi on?)."),
+            }
+            UIManager:show(InfoMessage:new{ text = msgs[why] or _("No continue point found.") })
+            return
+        end
+        local fp = localFileFor(marker, coll_path, target)
+        if not fp then
+            UIManager:show(InfoMessage:new{
+                text = T(_("The server says you're up to chapter %1, but it isn't downloaded here yet.\n\nLong-press the series in Maki and 'Download all here' to fetch it."),
+                         target.number or "?"),
+            })
+            return
+        end
+        if target.in_progress then seedPage(fp, target.page) end
+        if on_open then on_open(fp) end
+    end)
+end
+
+-- Label used by the sheet; kept short — the fetch happens on tap, so the
+-- label can't know the chapter number yet.
+function M.buttonLabel()
+    local _ = require("gettext")
+    return _("Continue from server")
+end
+
+return M
