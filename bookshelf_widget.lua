@@ -3351,6 +3351,10 @@ end
 function BookshelfWidget:onBookshelfToggleHero()
     self:_clearDpadFocus()
     self._expanded = not self._expanded
+    -- Page size changes with the layout (2 rows ↔ 3 rows), so the old page
+    -- number indexes a stale slice — the fetch would show old-page items
+    -- under a recomputed footer. Reset to page 1 on every layout toggle.
+    self.page = 1
     self:_rebuild()
     UIManager:setDirty(self, "ui")
     return true
@@ -3375,6 +3379,7 @@ end
 function BookshelfWidget:onSwipeShelvesUp(_, ges)
     if self._expanded then return false end
     self._expanded = true
+    self.page = 1
     self:_rebuild()
     UIManager:setDirty(self, "ui")
     return true
@@ -3385,6 +3390,7 @@ end
 function BookshelfWidget:onSwipeShelvesDown(_, ges)
     if not self._expanded then return false end
     self._expanded = false
+    self.page = 1
     self:_rebuild()
     UIManager:setDirty(self, "ui")
     return true
