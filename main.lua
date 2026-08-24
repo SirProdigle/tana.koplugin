@@ -47,6 +47,8 @@ require("bookshelf_colour_palette").attach(Bookshelf)
 -- instance's onCloseWidget find and dismiss the overlay during a KOReader
 -- exit, so the UIManager window stack can drain to zero.
 local _live_widget = nil
+-- One-shot: first bookshelf show per KOReader session flashes fully.
+local _did_first_full_flash = false
 
 -- Close a TouchMenu we received as the first callback argument. Used
 -- whenever a menu callback changes the visible UI layer (e.g. opens or
@@ -458,7 +460,17 @@ function Bookshelf:show()
     -- subsumes the small-region refreshes into our full-screen one. The
     -- existing-widget path below already uses setDirty(..., "ui"); this
     -- keeps the fresh-create path consistent. (Issue #18.)
-    UIManager:show(self._widget, "ui")
+    --
+    -- The FIRST show of a session flashes ("full"): the panel arrives here
+    -- from boot / the koboot chooser / FileManager with accumulated
+    -- ghosting, and one clean flash as the shelf lands clears it. Later
+    -- shows keep the flash-free "ui" refresh.
+    if not _did_first_full_flash then
+        _did_first_full_flash = true
+        UIManager:show(self._widget, "full")
+    else
+        UIManager:show(self._widget, "ui")
+    end
 end
 
 -- ---------------------------------------------------------------------------
