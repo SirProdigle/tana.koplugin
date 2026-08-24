@@ -41,6 +41,36 @@ function TanaActionSheet.show(opts)
     -- Title is the only place to fit it — ButtonDialog has no subtitle slot.
     local title = opts.title or ""
 
+    -- "Continue (Server) · Ch 97/169" — first row, for collections Maki
+    -- manages (they carry a .maki.lua marker). The chapter is looked up
+    -- BEFORE the sheet shows: one small JSON GET against Komga (short
+    -- timeouts), so reading done on other devices (Kindle page-streaming)
+    -- is offered by name. Offline or unreachable, it degrades to
+    -- "Continue (Local)" from the freshest local position — which the push
+    -- queue re-syncs to the server on the next network connection anyway.
+    do
+        local ok, TanaKomga = pcall(require, "tana_komga_progress")
+        local peek
+        if ok and TanaKomga.hasMarker(opts.coll_path) then
+            peek = TanaKomga.peekContinue(opts.coll_path)
+        end
+        if peek then
+            local callback
+            if peek.kind == "server" then
+                callback = closing(function()
+                    TanaKomga.continueFromServer(opts.coll_path, opts.on_open, peek.target)
+                end)
+            else -- "local": the sidecar already holds the page
+                callback = closing(function()
+                    if opts.on_open then opts.on_open(peek.fp) end
+                end)
+            end
+            rows[#rows + 1] = {
+                { text = TanaKomga.peekLabel(peek), callback = callback },
+            }
+        end
+    end
+
     if opts.first_fp then
         rows[#rows + 1] = {
             {
@@ -50,24 +80,6 @@ function TanaActionSheet.show(opts)
                 end),
             },
         }
-    end
-
-    -- "Continue from server" — only for collections Maki manages (they
-    -- carry a .maki.lua marker). Queries Komga's read progress on tap, so
-    -- reading done on other devices (Kindle page-streaming) is offered as
-    -- a starting point here.
-    do
-        local ok, TanaKomga = pcall(require, "tana_komga_progress")
-        if ok and TanaKomga.hasMarker(opts.coll_path) then
-            rows[#rows + 1] = {
-                {
-                    text     = TanaKomga.buttonLabel(),
-                    callback = closing(function()
-                        TanaKomga.continueFromServer(opts.coll_path, opts.on_open)
-                    end),
-                },
-            }
-        end
     end
 
     rows[#rows + 1] = {

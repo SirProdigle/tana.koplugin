@@ -57,9 +57,10 @@ local function findCredentials(catalog_url)
     return nil
 end
 
-local function fetchJSON(url, username, password)
+local function fetchJSON(url, username, password, block_to, total_to)
     local sink = {}
-    socketutil:set_timeout(socketutil.LARGE_BLOCK_TIMEOUT, socketutil.LARGE_TOTAL_TIMEOUT)
+    socketutil:set_timeout(block_to or socketutil.LARGE_BLOCK_TIMEOUT,
+                           total_to or socketutil.LARGE_TOTAL_TIMEOUT)
     local request = {
         url     = url,
         method  = "GET",
@@ -95,17 +96,23 @@ end
 -- Query the server for the series' continue point.
 -- Returns nil+reason, or a table:
 --   { number, name, book_id, page, in_progress (bool) }
-local function findContinuePoint(marker, username, password)
+local function findContinuePoint(marker, username, password, quick)
     local base = marker.catalog:match("^(https?://[^/]+)")
     local series_id = marker.feed:match("/series/([^/?#]+)")
     if not base or not series_id then return nil, "no series id in marker" end
     local url = string.format(
         "%s/api/v1/series/%s/books?size=1000&sort=metadata.numberSort,asc",
         base, series_id)
-    local data = fetchJSON(url, username, password)
+    -- quick: short timeouts, for the pre-sheet peek — a stalled radio must
+    -- not hold the action sheet hostage.
+    local data = fetchJSON(url, username, password,
+                           quick and 3 or nil, quick and 6 or nil)
     if not data or type(data.content) ~= "table" then
         return nil, "server unreachable"
     end
+    local last_book = data.content[#data.content]
+    local series_total = last_book
+        and tonumber((last_book.metadata and last_book.metadata.number) or last_book.number)
     local last_completed_idx, in_progress
     for i, book in ipairs(data.content) do
         local rp = book.readProgress
@@ -120,6 +127,7 @@ local function findContinuePoint(marker, username, password)
     local function shape(book, page, started)
         return {
             number      = (book.metadata and book.metadata.number) or book.number,
+            total       = series_total,
             name        = book.name,
             book_id     = book.id,
             page        = page,
@@ -241,7 +249,7 @@ end
 
 -- The action behind the sheet button. Shows its own progress/info UI and
 -- calls on_open(fp) when a local chapter file is resolved.
-function M.continueFromServer(coll_path, on_open)
+function M.continueFromServer(coll_path, on_open, prefetched)
     local InfoMessage = require("ui/widget/infomessage")
     local UIManager   = require("ui/uimanager")
     local Trapper     = require("ui/trapper")
@@ -249,16 +257,22 @@ function M.continueFromServer(coll_path, on_open)
     local T           = require("ffi/util").template
 
     Trapper:wrap(function()
-        Trapper:info(_("Checking reading progress on the server…"))
         local marker = readMarker(coll_path)
         if not marker then
-            Trapper:reset()
             UIManager:show(InfoMessage:new{ text = _("No Maki marker for this series.") })
             return
         end
         local username, password = findCredentials(marker.catalog)
-        local target, why = findContinuePoint(marker, username, password)
-        Trapper:reset()
+        local target, why
+        if prefetched then
+            -- The action sheet already asked the server (its button label
+            -- shows the answer); don't ask again.
+            target = prefetched
+        else
+            Trapper:info(_("Checking reading progress on the server…"))
+            target, why = findContinuePoint(marker, username, password)
+            Trapper:reset()
+        end
         if not target then
             local msgs = {
                 ["no server progress"] = _("The server has no reading progress for this series."),
@@ -322,16 +336,144 @@ function M.continueFromServer(coll_path, on_open)
     end)
 end
 
--- Label used by the sheet; kept short — the fetch happens on tap, so the
--- label can't know the chapter number yet.
-function M.buttonLabel()
+-- ── Pre-sheet peek ───────────────────────────────────────────────────────
+-- The action sheet wants to show WHERE a Continue would land before the
+-- user commits, as "Continue (Server) · Ch 97/169". Server first (one
+-- small JSON GET with short timeouts); when offline or unreachable, fall
+-- back to local state — the push queue (freshest, updated every page turn)
+-- then reader sidecars. Local progress re-syncs to the server on the next
+-- network connection anyway (tana_komga_push), so the two labels converge.
+
+local function chapterNumFromName(name)
+    return tonumber(name and name:match("[Cc]hapter%s+(%d+%.?%d*)"))
+end
+
+-- Furthest local reading position in this collection.
+-- Returns { num, fp, total } or nil when nothing has been read locally.
+local function findLocalContinue(coll_path)
+    local chapters = listLocalChapters(coll_path)
+    if #chapters == 0 then return nil end
+    local total = chapters[#chapters].num
+    local by_num = {}
+    for _, c in ipairs(chapters) do by_num[c.num] = c end
+
+    local function nextAfter(num)
+        for _, c in ipairs(chapters) do
+            if c.num > num then return c end
+        end
+        return nil
+    end
+
+    -- The push queue holds the very latest positions (noted every page
+    -- turn), including ones not yet flushed to the server.
+    local best_num, best_completed
+    local ok_ls, LuaSettings = pcall(require, "luasettings")
+    if ok_ls then
+        local ok_q, q = pcall(function()
+            local s = LuaSettings:open(
+                DataStorage:getDataDir() .. "/settings/tana_komga_push.lua")
+            return s:readSetting("queue")
+        end)
+        if ok_q and type(q) == "table" then
+            for _, e in pairs(q) do
+                if e.coll_path == coll_path then
+                    local num = chapterNumFromName(e.file)
+                    if num and (not best_num or num > best_num) then
+                        best_num, best_completed = num, e.completed
+                    end
+                end
+            end
+        end
+    end
+
+    -- Fall back to reader sidecars (written whenever a book is closed).
+    if not best_num then
+        for i = #chapters, 1, -1 do
+            local c = chapters[i]
+            if DocSettings:hasSidecarFile(c.fp) then
+                local finished = false
+                pcall(function()
+                    local ds = DocSettings:open(c.fp)
+                    local summary = ds:readSetting("summary")
+                    local page    = ds:readSetting("last_page")
+                    local pages   = ds:readSetting("doc_pages")
+                    finished = (summary and summary.status == "complete")
+                        or (page and pages and page >= pages)
+                end)
+                best_num, best_completed = c.num, finished
+                break
+            end
+        end
+    end
+    if not best_num then return nil end
+
+    local target = by_num[best_num]
+    if best_completed then
+        target = nextAfter(best_num) or target
+    end
+    if not target then return nil end
+    return { num = target.num, fp = target.fp, total = total }
+end
+
+-- Quick, synchronous continue-point lookup for the action sheet.
+-- Returns nil (no continue row), or:
+--   { kind = "server", num, total, target }  — target feeds continueFromServer
+--   { kind = "local",  num, total, fp }      — open fp directly
+function M.peekContinue(coll_path)
+    local marker = readMarker(coll_path)
+    if not marker then return nil end
+
+    local online = true
+    local ok_nm, NetworkMgr = pcall(require, "ui/network/manager")
+    if ok_nm then online = NetworkMgr:isConnected() end
+
+    if online then
+        local username, password = findCredentials(marker.catalog)
+        local target, why = findContinuePoint(marker, username, password, true)
+        if target then
+            return {
+                kind   = "server",
+                num    = tonumber(target.number),
+                total  = target.total,
+                target = target,
+            }
+        end
+        if why ~= "server unreachable" then
+            -- Server answered: no progress, or the series is finished.
+            -- Either way there is nothing to continue ("Start from
+            -- beginning" covers both — a finished series restarted from
+            -- chapter one triggers the re-read reset in tana_komga_push).
+            return nil
+        end
+        -- unreachable despite Wi-Fi: fall through to local
+    end
+
+    local l = findLocalContinue(coll_path)
+    if l then
+        return { kind = "local", num = l.num, total = l.total, fp = l.fp }
+    end
+    return nil
+end
+
+-- "Continue (Server) · Ch 97/169" — sheet button label for a peek result.
+function M.peekLabel(peek)
     local _ = require("gettext")
-    return _("Continue from server")
+    local T = require("ffi/util").template
+    local function fmt(n)
+        n = tonumber(n)
+        return n and string.format("%g", n) or "?"
+    end
+    local origin = peek.kind == "server" and _("Server") or _("Local")
+    if peek.total then
+        return T(_("Continue (%1) · Ch %2/%3"), origin, fmt(peek.num), fmt(peek.total))
+    end
+    return T(_("Continue (%1) · Ch %2"), origin, fmt(peek.num))
 end
 
 -- Internals shared with tana_komga_push (the write direction).
 M._readMarker      = readMarker
 M._findCredentials = findCredentials
 M._fetchJSON       = fetchJSON
+M._findLocalContinue = findLocalContinue
 
 return M
