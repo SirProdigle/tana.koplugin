@@ -301,6 +301,40 @@ function M.flush()
     end
 end
 
+-- Drop every queued entry for one collection — used when the user edits
+-- the series' progress deliberately (long-press set/clear): stale queue
+-- entries must not re-advance the server past their chosen point.
+function M.purgeCollection(coll_path)
+    if not coll_path then return end
+    local s = settings()
+    local q = s:readSetting("queue") or {}
+    local changed = false
+    for fp, e in pairs(q) do
+        if e.coll_path == coll_path then
+            q[fp] = nil
+            changed = true
+        end
+    end
+    if changed then
+        s:saveSetting("queue", q)
+        s:flush()
+        dirty = false
+    end
+end
+
+-- Pending (not yet pushed) queue entries for one collection, newest first:
+-- { {file, page, pages, completed, updated}, ... } — for the sync-status UI.
+function M.pendingFor(coll_path)
+    local s = settings()
+    local q = s:readSetting("queue") or {}
+    local out = {}
+    for _, e in pairs(q) do
+        if e.coll_path == coll_path then out[#out + 1] = e end
+    end
+    table.sort(out, function(a, b) return (a.updated or 0) > (b.updated or 0) end)
+    return out
+end
+
 -- Debounced background flush; default ~30s after reading activity so the
 -- network work never lands between page turns.
 function M.scheduleFlush(delay)

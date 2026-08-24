@@ -1738,7 +1738,7 @@ function BookshelfWidget:_buildShelfRows(items, content_w, shelf_h, PAD, n_rows)
         on_folder_tap     = function(f) bw:_expandFolder(f) end,
         on_folder_hold    = function(_) end,  -- no folder menu yet
         on_manga_tap      = function(c) bw:_openManga(c) end,
-        on_manga_hold     = function(_) end,  -- delete/refresh menu TBD
+        on_manga_hold     = function(c) bw:_openMangaMenu(c) end,
         -- Tana: suppress the "#N" series badge on the flat Home chip.
         -- It only carries useful information in a series-grouped view
         -- (e.g. drilled into Foundation, where #1 / #2 / #3 disambiguate);
@@ -3446,6 +3446,12 @@ function BookshelfWidget:_openGearMenu()
                   callback = closing(function() bw:_browseFiles() end) },
             },
             {
+                { text = "Sync status\xe2\x80\xa6",
+                  callback = closing(function()
+                    require("tana_sync_status"):show(bw)
+                  end) },
+            },
+            {
                 { text = "Settings\xe2\x80\xa6",
                   callback = closing(function() require("bookshelf_settings"):show(bw) end) },
                 { text = "About",
@@ -3690,6 +3696,21 @@ function BookshelfWidget:_openBookMenu(item)
         end,
     }
     buttons[#buttons + 1] = { reset_btn, delete_btn }
+
+    -- Synced-progress clear (booksync server + Hardcover + local reset).
+    -- Only offered once the book has actually synced: Progress sync is
+    -- configured AND the sidecar carries the kosync digest.
+    local ok_sync, TanaSync = pcall(require, "tana_sync")
+    if ok_sync then
+        local backend = TanaSync.book(book.filepath, book.title or book.filename)
+        local ok_tracked, tracked = pcall(function() return backend:tracked() end)
+        if ok_tracked and tracked then
+            buttons[#buttons + 1] = {
+                { text = _("Clear synced progress\xe2\x80\xa6"),
+                  callback = closing(function() bw:_syncClearProgress(backend) end) },
+            }
+        end
+    end
 
     for _, row in ipairs(nav_rows) do
         buttons[#buttons + 1] = row
@@ -3976,6 +3997,154 @@ function BookshelfWidget:_openInFileBrowser(path)
     if self.ui and self.ui.file_chooser then
         self.ui.file_chooser:changeToPath(path)
     end
+end
+
+-- ─── Sync progress menus ─────────────────────────────────────────────────────
+--
+-- All written against the tana_sync backend interface, so one set of
+-- dialogs serves both manga (Komga) and books (booksync + Hardcover).
+
+-- Long-press on a manga collection card.
+function BookshelfWidget:_openMangaMenu(coll)
+    if not coll or not coll.path then return end
+    local backend = require("tana_sync").manga(
+        coll.path, coll.label or coll.series_name or coll.path:match("([^/]+)$"))
+    self:_openSyncMenu(backend)
+end
+
+function BookshelfWidget:_openSyncMenu(backend)
+    local ButtonDialog = require("ui/widget/buttondialog")
+    local bw = self
+    if not backend:tracked() then
+        UIManager:show(require("ui/widget/infomessage"):new{
+            text    = _("This series is not linked to the server (no Maki marker)."),
+            timeout = 3,
+        })
+        return
+    end
+    local peek = backend:peek()
+    local state = peek and peek.label or _("not started")
+    local pending = backend:pending()
+    if pending > 0 then
+        state = state .. string.format(_(" · %d queued"), pending)
+    end
+    local dialog
+    local function closing(fn)
+        return function()
+            UIManager:close(dialog)
+            if fn then fn() end
+        end
+    end
+    local buttons = {}
+    if backend.can_set_progress then
+        buttons[#buttons + 1] = {
+            { text = _("Set progress to chapter\xe2\x80\xa6"),
+              callback = closing(function() bw:_syncSetProgress(backend) end) },
+        }
+    end
+    buttons[#buttons + 1] = {
+        { text = _("Clear progress (server + device)\xe2\x80\xa6"),
+          callback = closing(function() bw:_syncClearProgress(backend) end) },
+    }
+    buttons[#buttons + 1] = { { text = _("Cancel"), callback = closing() } }
+    dialog = ButtonDialog:new{
+        title       = (backend.label or "") .. "\n" .. state,
+        title_align = "center",
+        buttons     = buttons,
+    }
+    UIManager:show(dialog)
+end
+
+-- "I read up to chapter N elsewhere" — spinner over the series' chapter
+-- range, then mark ≤ N read / > N unread on the server.
+function BookshelfWidget:_syncSetProgress(backend)
+    local Trapper = require("ui/trapper")
+    local bw = self
+    Trapper:wrap(function()
+        Trapper:info(_("Fetching series from the server\xe2\x80\xa6"))
+        local range, why = backend:fetchRange()
+        Trapper:reset()
+        if not range then
+            UIManager:show(require("ui/widget/infomessage"):new{
+                text    = string.format(_("Could not fetch the series: %s"), why or "?"),
+                timeout = 3,
+            })
+            return
+        end
+        local SpinWidget = require("ui/widget/spinwidget")
+        UIManager:show(SpinWidget:new{
+            title_text     = backend.label or "",
+            info_text      = _("Mark read up to chapter"),
+            value          = range.current,
+            value_min      = 0,
+            value_max      = range.max,
+            value_step     = 1,
+            value_hold_step = 10,
+            ok_text        = _("Set"),
+            -- the fetched default IS the common choice ("backfill to where
+            -- I actually am") — keep Set tappable without a value change
+            ok_always_enabled = true,
+            callback       = function(spin)
+                bw:_syncApplyProgress(backend, spin.value)
+            end,
+        })
+    end)
+end
+
+function BookshelfWidget:_syncApplyProgress(backend, upto_num)
+    local Trapper = require("ui/trapper")
+    local bw = self
+    Trapper:wrap(function()
+        Trapper:info(_("Updating server\xe2\x80\xa6"))
+        local res, why = backend:setProgress(upto_num, function(i, total)
+            Trapper:info(string.format(_("Updating server\xe2\x80\xa6 %d/%d"), i, total))
+        end)
+        Trapper:reset()
+        local text
+        if not res then
+            text = string.format(_("Update failed: %s"), why or "?")
+        elseif res.failed > 0 then
+            text = string.format(_("Set to chapter %g — %d updates failed (will not retry)."),
+                                 upto_num, res.failed)
+        else
+            text = string.format(_("Progress set to chapter %g."), upto_num)
+        end
+        UIManager:show(require("ui/widget/infomessage"):new{ text = text, timeout = 3 })
+        Repo.invalidateProgressCache()
+        bw:_rebuild()
+        UIManager:setDirty(bw, "ui")
+    end)
+end
+
+function BookshelfWidget:_syncClearProgress(backend)
+    local ConfirmBox = require("ui/widget/confirmbox")
+    local bw = self
+    local detail = backend.kind == "book"
+        and _("Removes it from the sync server, undoes its Hardcover entry, and resets the local reading position.")
+        or  _("Wipes the series' progress on the server and every local resume point (queue, sidecars, history).")
+    UIManager:show(ConfirmBox:new{
+        text        = string.format(_("Clear all reading progress for\n%s?\n\n%s"),
+                                    backend.label or "?", detail),
+        ok_text     = _("Clear"),
+        ok_callback = function()
+            local Trapper = require("ui/trapper")
+            Trapper:wrap(function()
+                Trapper:info(_("Clearing progress\xe2\x80\xa6"))
+                local ok, why = backend:clearServer()
+                backend:clearLocal()
+                Trapper:reset()
+                UIManager:show(require("ui/widget/infomessage"):new{
+                    text = ok and _("Progress cleared.")
+                        or string.format(_("Local progress cleared; the server could not be reached (%s). Try again when online."), why or "?"),
+                    timeout = 3,
+                })
+                Repo.invalidateProgressCache()
+                Repo.invalidateWalkCache()
+                bw:_rebuild()
+                UIManager:setDirty(bw, "ui")
+            end)
+        end,
+    })
 end
 
 -- ─── Dismiss / passthrough ───────────────────────────────────────────────────

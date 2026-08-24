@@ -260,6 +260,7 @@ function Bookshelf:_extendMenuOrder()
     table.insert(order["KOMenu:menu_buttons"], 2, "bookshelf_tab")
     order.bookshelf_tab = {
         "bookshelf_toggle",
+        "bookshelf_sync_status",
         "bookshelf_hero_card",
         "bookshelf_shelf_tabs",
         "bookshelf_settings",
@@ -340,6 +341,15 @@ function Bookshelf:addToMainMenu(menu_items)
             _closeTouchMenu(touchmenu_instance)
         end,
         separator = true,
+    }
+
+    menu_items.bookshelf_sync_status = {
+        text         = _("Sync status"),
+        enabled_func = function() return outer:_isShowing() end,
+        callback     = function(touchmenu_instance)
+            _closeTouchMenu(touchmenu_instance)
+            require("tana_sync_status"):show(_live_widget)
+        end,
     }
 
     menu_items.bookshelf_hero_card = {
