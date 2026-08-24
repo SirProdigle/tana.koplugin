@@ -22,6 +22,15 @@ local http        = require("socket.http")
 
 local M = {}
 
+-- Komga returns JSON null for readProgress/metadata/media on books the
+-- server has no data for; KOReader's JSON decoder maps null to a TRUTHY
+-- userdata sentinel, so `x and x.field` still indexes it and crashes the
+-- whole app (this took down every boot on 2026-08-24 once a never-read
+-- chapter entered a queued series). Route every nested access through tbl().
+local function tbl(x)
+    return type(x) == "table" and x or nil
+end
+
 local state           -- lazy LuaSettings
 local dirty = false
 local flush_scheduled = false
@@ -113,7 +122,8 @@ local function resolveBookId(Progress, marker, entry, username, password)
         "%s/api/v1/series/%s/books?size=1000", base, series_id), username, password)
     if not data or type(data.content) ~= "table" then return nil end
     for _, book in ipairs(data.content) do
-        local bn = tonumber((book.metadata and book.metadata.number) or book.number)
+        local meta = tbl(book.metadata)
+        local bn = tonumber((meta and meta.number) or book.number)
         if bn == num then return book.id end
     end
     return nil
@@ -219,12 +229,14 @@ function M.flush()
             if data and type(data.content) == "table" then
                 local books, id_by_num = {}, {}
                 for _, book in ipairs(data.content) do
-                    local num = tonumber((book.metadata and book.metadata.number) or book.number)
+                    local meta = tbl(book.metadata)
+                    local num = tonumber((meta and meta.number) or book.number)
                     if num then
-                        local rp = book.readProgress
+                        local rp    = tbl(book.readProgress)
+                        local media = tbl(book.media)
                         books[#books + 1] = {
                             num       = num,
-                            pagesCount = book.media and book.media.pagesCount or nil,
+                            pagesCount = media and media.pagesCount or nil,
                             page      = rp and rp.page or nil,
                             completed = rp and rp.completed or nil,
                         }

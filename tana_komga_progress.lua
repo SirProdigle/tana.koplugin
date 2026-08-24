@@ -111,8 +111,10 @@ local function findContinuePoint(marker, username, password, quick)
         return nil, "server unreachable"
     end
     local last_book = data.content[#data.content]
+    local last_meta = last_book and type(last_book.metadata) == "table"
+        and last_book.metadata or nil
     local series_total = last_book
-        and tonumber((last_book.metadata and last_book.metadata.number) or last_book.number)
+        and tonumber((last_meta and last_meta.number) or last_book.number)
     local last_completed_idx, in_progress
     for i, book in ipairs(data.content) do
         local rp = book.readProgress
@@ -126,7 +128,8 @@ local function findContinuePoint(marker, username, password, quick)
     end
     local function shape(book, page, started)
         return {
-            number      = (book.metadata and book.metadata.number) or book.number,
+            number      = (type(book.metadata) == "table" and book.metadata.number)
+                          or book.number,
             total       = series_total,
             name        = book.name,
             book_id     = book.id,
