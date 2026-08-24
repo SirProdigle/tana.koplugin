@@ -1164,20 +1164,58 @@ function BookshelfWidget:_kickOffMissingMetaExtraction(items, slot_w, slot_h, he
     logger.dbg(string.format("[bookshelf perf] _kickOffMeta: queued=%d displayed=%d",
         #files, #(items or {})))
     if #files > 0 then
-        UIManager:nextTick(function()
-            -- If CoverBrowser already has a background job running, don't
-            -- interrupt it (terminateBackgroundJobs + re-fork is what causes
-            -- the "Start-up of background extraction job failed" toast when
-            -- the killed process is still in the table). Schedule a retry
-            -- instead; the poll below catches covers whenever they appear.
-            if BIM:isExtractingInBackground() then
-                UIManager:scheduleIn(BIM_POLL_INTERVAL_S, function()
-                    pcall(function() BIM:extractInBackground(files) end)
-                end)
-            else
-                pcall(function() BIM:extractInBackground(files) end)
+        local Device = require("device")
+        if Device:isAndroid() then
+            -- Fork-free path. BIM:extractInBackground forks a subprocess
+            -- (ffiutil.runInSubProcess); on Android the child's exit races
+            -- ART's "process reaper" thread and aborts the WHOLE app
+            -- (FORTIFY: pthread_mutex_lock on a destroyed mutex — same
+            -- crash as maki's parallel bulk download, see
+            -- makibrowser._bulkFetchParallel). Worse, dying before BIM
+            -- records the attempt leaves the row in_progress=1 forever, so
+            -- the same file re-forks at every boot: a crash loop (hit
+            -- 2026-08-24 with a freshly synced chapter). Extract inline
+            -- instead, one file per scheduled tick — extractBookInfo
+            -- writes straight to the cache DB and the existing poll
+            -- repaints as covers appear.
+            self._inline_extract_queue = files
+            if not self._inline_extract_running then
+                self._inline_extract_running = true
+                local bw = self
+                local function step()
+                    local q = bw._inline_extract_queue
+                    local f = q and table.remove(q, 1)
+                    if not f then
+                        bw._inline_extract_running = false
+                        return
+                    end
+                    local okx, errx = pcall(function()
+                        BIM:extractBookInfo(f.filepath, f.cover_specs)
+                    end)
+                    if not okx then
+                        logger.warn("bookshelf inline extract failed:",
+                                    f.filepath, errx)
+                    end
+                    UIManager:scheduleIn(0.2, step)
+                end
+                UIManager:scheduleIn(0.5, step)
             end
-        end)
+        else
+            UIManager:nextTick(function()
+                -- If CoverBrowser already has a background job running, don't
+                -- interrupt it (terminateBackgroundJobs + re-fork is what causes
+                -- the "Start-up of background extraction job failed" toast when
+                -- the killed process is still in the table). Schedule a retry
+                -- instead; the poll below catches covers whenever they appear.
+                if BIM:isExtractingInBackground() then
+                    UIManager:scheduleIn(BIM_POLL_INTERVAL_S, function()
+                        pcall(function() BIM:extractInBackground(files) end)
+                    end)
+                else
+                    pcall(function() BIM:extractInBackground(files) end)
+                end
+            end)
+        end
     end
     self:_armExtractionPoll(files)
 end
@@ -1496,6 +1534,9 @@ end
 -- handler shows a fresh Bookshelf instance back on top.)
 function BookshelfWidget:_openBook(book)
     if not book or not book.filepath then return end
+    -- Cancel any pending fast-flip waveform override before the reader
+    -- paints (no-op off Onyx).
+    require("tana_eink").restoreNow()
     -- Stale records (Send-to-Kindle moved/removed the file after BIM cached
     -- the path) crash KOReader's filemanagerbookinfo:show via lfs.attributes
     -- on nil. ReaderUI:showReader nil-checks itself, but presenting a "file
@@ -2085,6 +2126,10 @@ end
 -- AND avoids the use-after-free path where _buildHero rebuilds a SpineWidget
 -- against a freed BIM bb on _preview_book.cover_bb.
 function BookshelfWidget:_swapShelvesInPlace()
+    -- Onyx: every shelf page-change paint (footer chevrons, swipes,
+    -- hardware keys, drill-down paging) runs in fast DU, with a quality
+    -- settle once flipping pauses. No-op off Android. See tana_eink.lua.
+    require("tana_eink").fastFlip()
     local _perf_t0 = _gettime()
     if not self._inner_vgroup or not self._shelf_dims then
         self:_rebuild()
