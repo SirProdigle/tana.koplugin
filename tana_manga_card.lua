@@ -74,8 +74,8 @@ function TanaMangaCard:init()
     -- Height tuned to fit one line at the chosen face plus comfortable
     -- vertical padding, with a hard cap so the cover stays readable on
     -- short slots (expanded mode / portrait at heavy font scales).
-    local strip_face   = Font:getFace("infofont", 16)
-    local strip_text_h = strip_face.size or 16
+    local strip_face   = Font:getFace("infofont", 8)
+    local strip_text_h = strip_face.size or 8
     local pad_v        = Size.padding.small
     local strip_h      = math.min(
         math.floor(self.height * 0.22),

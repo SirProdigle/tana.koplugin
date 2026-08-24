@@ -408,7 +408,10 @@ function BookshelfWidget:_rebuild()
     -- keep their relative size.
     local pad_natural = math.floor(Size.padding.fullscreen * 2 * 0.8)
     local pad_capped  = math.floor(self.width * 0.03)
-    local PAD         = math.min(pad_natural, pad_capped)
+    -- Trimmed ~30%: covers gained real estate over whitespace (edge margins
+    -- and cover-to-cover gaps both shrink), keeping thumbnails easier to
+    -- parse — especially the text-only placeholder cards on the manga chip.
+    local PAD         = math.floor(math.min(pad_natural, pad_capped) * 0.7)
     local side_pad  = PAD
     local content_w = self.width - side_pad * 2
 
