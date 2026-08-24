@@ -29,11 +29,13 @@ local CLASS = "android/onyx/ViewUpdateHelper"
 local UI_DU_MODE    = 1 -- fast 2-level waveform
 local UI_REGAL_MODE = 6 -- quality settle
 
--- Settle fast: DU renders a dense grayscale cover grid as barely-readable
--- mush, so the quality repaint must chase the flip closely — 0.9s of mush
--- read as "broken" in practice. Rapid flipping still stays pure DU because
--- every flip re-arms this timer.
-local SETTLE_DELAY_S = 0.3
+-- Settle immediately behind the flip: DU renders a dense grayscale cover
+-- grid as barely-readable mush, so the quality repaint chases the flip as
+-- closely as possible — just enough delay for the DU frame to post first,
+-- so the flip still FEELS instant while the greys resolve right behind it.
+-- (SDM serialises updates, so the settle queues after the in-flight DU
+-- rather than colliding with it.)
+local SETTLE_DELAY_S = 0.05
 
 local android, ffi
 local available -- nil = not probed yet, false = unusable, true = ready
