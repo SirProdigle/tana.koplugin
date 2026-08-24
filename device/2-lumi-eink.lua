@@ -12,9 +12,9 @@
 -- QualcommEPDController) does on recognised models: after each buffer
 -- blit, call the Onyx framework's View.refreshScreen(x, y, w, h, mode) —
 -- a PUBLIC method on this firmware — with the proper waveform:
---   full          = UPDATE_FULL + WAIT + GC16  (deep-clean flash)
---   flash UI      = UPDATE_FULL + REAGL
---   partial / UI  = GC16 partial (high quality, no flash)
+--   full          = DEEP_GC (flashing deep anti-ghost clean)
+--   flash UI      = GC     (flashing full-quality refresh)
+--   partial / UI  = REGAL  (slow high-quality partial, minimal ghosting)
 --   fast          = DU
 -- (setWaveformAndScheme/preventSystemRefresh no longer exists on this
 -- firmware; refreshScreen alone re-refreshes the region with the wanted
@@ -33,17 +33,19 @@ if product ~= "go103_2lumi" then return end
 local ffi = require("ffi")
 local logger = require("logger")
 
--- Waveform constants (QualcommEPDController + OnyxEPDController combos).
-local UPDATE_FULL = 32
-local MODE_WAIT   = 64
-local MODE_DU     = 1
-local MODE_GC16   = 2
-local MODE_REAGL  = 6
-
-local WF_FULL       = UPDATE_FULL + MODE_WAIT + MODE_GC16 -- 98
-local WF_FLASH_UI   = UPDATE_FULL + MODE_REAGL            -- 38
-local WF_PARTIAL    = MODE_GC16                           -- 2
-local WF_FAST       = MODE_DU                             -- 1
+-- Waveform constants — the authoritative values from THIS firmware's
+-- android.onyx.ViewUpdateHelper static fields (dexdumped from
+-- /system/framework, 2026-05 build), NOT the old Qualcomm-era combos:
+--   UI_DU_MODE=1  UI_GU_MODE=2  UI_GC4_MODE=3  UI_DEFAULT_MODE=5
+--   UI_REGAL_MODE=6  UI_REGAL_PLUS_MODE=9  UI_GC_MODE=98
+--   UI_GCC_MODE=107  UI_DEEP_GC_MODE=108
+-- (The old 32+64+2 arithmetic lands on 98 = UI_GC_MODE by coincidence;
+-- 2 is GU — a mediocre grayscale update that ghosts — and 38 is simply
+-- undefined here.)
+local WF_FULL       = 108 -- UI_DEEP_GC_MODE: flashing deep anti-ghost clean
+local WF_FLASH_UI   = 98  -- UI_GC_MODE: flashing GC full refresh
+local WF_PARTIAL    = 6   -- UI_REGAL_MODE: slow, high-quality partial
+local WF_FAST       = 1   -- UI_DU_MODE
 
 local DELAY_PAGE = 0.25  -- s; launcher's EINK_WAVEFORM_DELAY
 local DELAY_UI   = 0.10  -- s; EINK_WAVEFORM_DELAY_UI
@@ -104,7 +106,7 @@ local Screen = Device.screen
 
 -- Sanity-probe once: if refreshScreen is missing on this firmware, leave
 -- the stock (no-op) behaviour alone rather than break rendering.
-local probe = refresh_screen(0, 0, Screen:getWidth(), Screen:getHeight(), WF_FULL)
+local probe = refresh_screen(0, 0, Screen:getWidth(), Screen:getHeight(), WF_FLASH_UI)
 if not probe then
     logger.warn("2-lumi-eink: View.refreshScreen unavailable; patch inactive")
     return
