@@ -44,12 +44,15 @@ local logger = require("logger")
 -- undefined here.)
 local WF_FULL       = 108 -- UI_DEEP_GC_MODE: flashing deep anti-ghost clean
 local WF_FLASH_UI   = 98  -- UI_GC_MODE: flashing GC full refresh
-local WF_PARTIAL    = 6   -- UI_REGAL_MODE: slow, high-quality partial
-local WF_FAST       = 1   -- UI_DU_MODE
+local WF_PARTIAL    = 6   -- UI_REGAL_MODE (unused here; EAC profile supplies it)
+local WF_FAST       = 1   -- UI_DU_MODE (unused here)
 
-local DELAY_PAGE = 0.25  -- s; launcher's EINK_WAVEFORM_DELAY
-local DELAY_UI   = 0.10  -- s; EINK_WAVEFORM_DELAY_UI
-local DELAY_FAST = 0     -- EINK_WAVEFORM_DELAY_FAST
+-- Flash delay: long enough that the system's own REGAL update of the
+-- freshly posted frame has fully completed. Firing earlier collides with
+-- the in-flight waveform and cancels it midway — pixels freeze half
+-- transitioned, which reads as severe ghosting ("items fade out and stop
+-- before fully fading").
+local DELAY_FLASH = 0.45
 
 -- Same attach/detach-per-call JNI pattern as 2-lumi-frontlight.lua.
 local function jni_call(runnable)
@@ -140,36 +143,28 @@ local function request(mode, delay, x, y, w, h)
     fire()
 end
 
--- Replace the no-op refresh implementations (framebuffer_android skips
--- android.einkUpdate entirely when the launcher reports no eink support).
+-- Routine paints (partial/ui/fast) are left to the system: KOReader now
+-- has a per-app EAC profile (applied via koboot's EAC_APPLY receiver)
+-- whose app-scope updateMode is REGAL, so the FIRST update of every
+-- posted frame is already the high-quality slow waveform, at exactly the
+-- right moment. Re-refreshing after the fact — what this patch originally
+-- did — collided with that in-flight update and cancelled it midway.
+--
+-- Only the deliberate flash paths add work: a GC / DEEP_GC re-refresh
+-- well after the frame's own update has finished.
 function Screen:refreshFullImp(x, y, w, h)
     self:_updateWindow()
-    request(WF_FULL, DELAY_PAGE, 0, 0, self:getWidth(), self:getHeight())
-end
-
-function Screen:refreshPartialImp(x, y, w, h)
-    self:_updateWindow()
-    request(WF_PARTIAL, DELAY_PAGE, x, y, w, h)
+    request(WF_FULL, DELAY_FLASH, 0, 0, self:getWidth(), self:getHeight())
 end
 
 function Screen:refreshFlashPartialImp(x, y, w, h)
     self:_updateWindow()
-    request(WF_FULL, DELAY_PAGE, x, y, w, h)
-end
-
-function Screen:refreshUIImp(x, y, w, h)
-    self:_updateWindow()
-    request(WF_PARTIAL, DELAY_UI, x, y, w, h)
+    request(WF_FULL, DELAY_FLASH, x, y, w, h)
 end
 
 function Screen:refreshFlashUIImp(x, y, w, h)
     self:_updateWindow()
-    request(WF_FLASH_UI, DELAY_UI, x, y, w, h)
-end
-
-function Screen:refreshFastImp(x, y, w, h)
-    self:_updateWindow()
-    request(WF_FAST, DELAY_FAST, x, y, w, h)
+    request(WF_FLASH_UI, DELAY_FLASH, x, y, w, h)
 end
 
 -- Let KOReader know it really has an e-ink screen now: unlocks the E-ink
