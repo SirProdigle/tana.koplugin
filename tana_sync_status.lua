@@ -53,12 +53,12 @@ function TanaSyncStatus:show(bw)
     -- ── Manga ────────────────────────────────────────────────────────────
     local colls = TanaManga.listCollections()
     local tracked = {}
-    for _, c in ipairs(colls) do
+    for _i, c in ipairs(colls) do
         if TanaKomga.hasMarker(c.path) then tracked[#tracked + 1] = c end
     end
     if #tracked > 0 then
         items[#items + 1] = header(_("Manga · Komga"))
-        for _, c in ipairs(tracked) do
+        for _i, c in ipairs(tracked) do
             local l = TanaKomga._findLocalContinue(c.path)
             local pending = #TanaPush.pendingFor(c.path)
             local state
@@ -89,7 +89,7 @@ function TanaSyncStatus:show(bw)
     local server_books = Booksync.available() and Booksync.getStatus(true) or nil
     local on_server = {}
     if server_books then
-        for _, b in ipairs(server_books) do
+        for _i, b in ipairs(server_books) do
             on_server[b.document] = true
             local pct = b.percentage and math.floor(b.percentage * 100 + 0.5) or 0
             local hc = type(b.hardcover) == "table" and b.hardcover or nil
@@ -121,7 +121,7 @@ function TanaSyncStatus:show(bw)
     local ok_repo, Repo = pcall(require, "bookshelf_book_repository")
     if ok_rh and ok_repo and type(ReadHistory.hist) == "table" then
         local shown = 0
-        for _, h in ipairs(ReadHistory.hist) do
+        for _i, h in ipairs(ReadHistory.hist) do
             if shown >= 15 then break end
             local fp = h.file
             if fp and not TanaManga.isChapterFile(fp) then
