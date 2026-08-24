@@ -176,7 +176,18 @@ if powerd then
     powerd.warm_diff = max_wa
     powerd.frontlightWarmthHW = function() return android.getScreenWarmth() end
     local cur_br = android.getScreenBrightness()
-    if cur_br and cur_br > 0 then powerd.fl_intensity = cur_br end
+    if cur_br and cur_br > 0 then
+        powerd.fl_intensity = cur_br
+        powerd.is_fl_on = true
+    else
+        -- Hardware light is OFF right now. Stock AndroidPowerD init already
+        -- seeded fl_intensity from the Android *window* brightness (0–255
+        -- scale — reads as >100% once fl_max becomes native 32) and set
+        -- is_fl_on = true. Correct both: keep a sane native restore level
+        -- and report the light as off so frontlightIntensity() returns 0.
+        powerd.fl_intensity = math.max(1, math.floor(max_br / 2))
+        powerd.is_fl_on = false
+    end
     powerd.fl_warmth = android.getScreenWarmth() or 0
 end
 

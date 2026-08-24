@@ -1468,7 +1468,10 @@ function BookshelfWidget:_buildDeviceState()
         -- bookends's normalisation so users get a familiar 0–100 scale
         -- via %light_pct (the raw %light is still available).
         if light and PowerD.fl_max and PowerD.fl_max > 0 then
-            light_pct = math.floor(light / PowerD.fl_max * 100 + 0.5)
+            -- Clamp: a powerd whose fl_intensity was seeded on a different
+            -- scale than fl_max (seen on go103_2lumi before the frontlight
+            -- patch corrected it) must not render as ">100%".
+            light_pct = math.min(100, math.floor(light / PowerD.fl_max * 100 + 0.5))
         end
         if PowerD.frontlightWarmth then
             local ok, v = pcall(function() return PowerD:frontlightWarmth() end)
