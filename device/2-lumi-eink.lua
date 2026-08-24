@@ -1,5 +1,17 @@
 -- 2-lumi-eink.lua
 --
+-- RETIRED from the device (2026-08-24): do NOT deploy to
+-- /sdcard/koreader/patches/. Kept for reference only.
+--
+-- App-side refresh injection is the wrong architecture on this firmware:
+-- any re-refresh races the system's in-flight EPD update of the same
+-- region and cancels its waveform midway (pixels freeze half-transitioned
+-- = manufactured ghosting). The working setup instead gives KOReader a
+-- per-app EAC profile (koboot applies it at start: updateMode 0 adaptive,
+-- gcInterval 5 so the driver inserts the periodic GC itself, perfectly
+-- timed) and lets the system own every update. Standby deep-clean lives
+-- in koboot (DEEP_GC via ViewUpdateHelper on SCREEN_OFF).
+--
 -- E-ink waveform control for the Onyx Boox Go 10.3 Gen II ("Lumi",
 -- model go103_2lumi). KOReader v2026.07.1's launcher doesn't recognise
 -- this model, so EPDFactory hands it the no-op EPD controller:
