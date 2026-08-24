@@ -119,8 +119,75 @@ local function resolveBookId(Progress, marker, entry, username, password)
     return nil
 end
 
--- Push everything queued. Entries are removed only when the server
--- accepted them; failures stay queued for the next opportunity.
+-- Pure decision core: given this series' queued entries and the server's
+-- book states, decide what to push, what to silently drop, and whether to
+-- reset the series first.
+--
+-- Semantics ("furthest ahead wins, deliberate re-read resets"):
+--   * A push must advance the series position: a higher chapter than the
+--     server's furthest, or the same chapter at a higher page /
+--     newly-completed. Anything behind is dropped — reopening an old
+--     chapter never regresses the server.
+--   * Exception: when the series is essentially finished on the server
+--     (every chapter completed or within 2 pages of the end — network
+--     hiccup tolerance) and the user opens the FIRST chapter, that is a
+--     deliberate re-read: reset the series' server progress and push from
+--     scratch.
+--
+-- entries: { {num, page, completed}, ... } (any order)
+-- books:   { {num, pagesCount, page, completed}, ... } ascending by num;
+--          page/completed nil when the server has no progress for it.
+-- returns  { reset = bool, pushes = {entry...}, drops = {entry...} }
+function M.planPush(entries, books)
+    local plan = { reset = false, pushes = {}, drops = {} }
+    if #books == 0 then
+        for _, e in ipairs(entries) do plan.pushes[#plan.pushes + 1] = e end
+        return plan
+    end
+    local furthest
+    local almost_done = true
+    for _, b in ipairs(books) do
+        local read_pages = b.completed and (b.pagesCount or b.page or 0) or (b.page or 0)
+        if b.completed or read_pages > 0 then
+            if not furthest or b.num > furthest.num then
+                furthest = { num = b.num, page = read_pages, completed = b.completed }
+            end
+        end
+        if not (b.completed or (b.pagesCount and read_pages >= b.pagesCount - 2)) then
+            almost_done = false
+        end
+    end
+    local first_num = books[1].num
+    local sorted = {}
+    for _, e in ipairs(entries) do sorted[#sorted + 1] = e end
+    table.sort(sorted, function(a, b) return a.num < b.num end)
+    for _, e in ipairs(sorted) do
+        local push
+        if almost_done and e.num == first_num and not plan.reset then
+            plan.reset = true
+            furthest = nil
+            push = true
+        elseif not furthest then
+            push = true
+        elseif e.num > furthest.num then
+            push = true
+        elseif e.num == furthest.num
+           and ((e.completed and not furthest.completed)
+                or (e.page or 0) > (furthest.page or 0)) then
+            push = true
+        end
+        if push then
+            plan.pushes[#plan.pushes + 1] = e
+            furthest = { num = e.num, page = e.page, completed = e.completed }
+        else
+            plan.drops[#plan.drops + 1] = e
+        end
+    end
+    return plan
+end
+
+-- Push everything queued. Entries leave the queue when the server accepts
+-- them OR when the planner drops them as behind; failures stay queued.
 function M.flush()
     flush_scheduled = false
     if not isOnline() then return end
@@ -129,25 +196,90 @@ function M.flush()
     if next(q) == nil then return end
     local Progress = require("tana_komga_progress")
     local changed = false
+
+    -- Group queue entries by collection.
+    local by_coll = {}
     for fp, e in pairs(q) do
-        local pushed = false
-        local marker = Progress._readMarker and Progress._readMarker(e.coll_path)
-        if marker then
+        by_coll[e.coll_path] = by_coll[e.coll_path] or {}
+        table.insert(by_coll[e.coll_path], { fp = fp, e = e })
+    end
+
+    for coll_path, items in pairs(by_coll) do
+        local marker = Progress._readMarker and Progress._readMarker(coll_path)
+        if not marker then
+            -- Collection gone: drop its orphans.
+            for _, it in ipairs(items) do q[it.fp] = nil; changed = true end
+        else
             local username, password = Progress._findCredentials(marker.catalog)
             local base = marker.catalog:match("^(https?://[^/]+)")
-            local book_id = resolveBookId(Progress, marker, e, username, password)
-            if base and book_id then
-                pushed = patchProgress(base, book_id, e.page, e.completed,
-                                       username, password)
+            local series_id = marker.feed and marker.feed:match("/series/([^/?#]+)")
+            local data = (base and series_id) and Progress._fetchJSON(string.format(
+                "%s/api/v1/series/%s/books?size=1000&sort=metadata.numberSort,asc",
+                base, series_id), username, password) or nil
+            if data and type(data.content) == "table" then
+                local books, id_by_num = {}, {}
+                for _, book in ipairs(data.content) do
+                    local num = tonumber((book.metadata and book.metadata.number) or book.number)
+                    if num then
+                        local rp = book.readProgress
+                        books[#books + 1] = {
+                            num       = num,
+                            pagesCount = book.media and book.media.pagesCount or nil,
+                            page      = rp and rp.page or nil,
+                            completed = rp and rp.completed or nil,
+                        }
+                        id_by_num[num] = book.id
+                    end
+                end
+                local entries, fp_by_num = {}, {}
+                for _, it in ipairs(items) do
+                    local num = tonumber(it.e.file and it.e.file:match("[Cc]hapter%s+(%d+%.?%d*)"))
+                    if num and id_by_num[num] then
+                        entries[#entries + 1] = { num = num, page = it.e.page,
+                                                  completed = it.e.completed }
+                        fp_by_num[num] = it.fp
+                    else
+                        -- Number unparseable / unknown on server: drop.
+                        q[it.fp] = nil; changed = true
+                    end
+                end
+                local plan = M.planPush(entries, books)
+                local ok_to_push = true
+                if plan.reset then
+                    -- Deliberate re-read: wipe the series' server progress.
+                    socketutil:set_timeout(10, 30)
+                    local headers = {}
+                    if username then
+                        headers["Authorization"] = "Basic "
+                            .. mime.b64(username .. ":" .. (password or ""))
+                    end
+                    local code = socket.skip(1, http.request{
+                        url     = string.format("%s/api/v1/series/%s/read-progress",
+                                                base, series_id),
+                        method  = "DELETE",
+                        headers = headers,
+                    })
+                    socketutil:reset_timeout()
+                    ok_to_push = (code == 204 or code == 200)
+                    if ok_to_push then
+                        logger.info("tana_komga_push: series re-read — reset", series_id)
+                    end
+                end
+                if ok_to_push then
+                    for _, e in ipairs(plan.drops) do
+                        q[fp_by_num[e.num]] = nil; changed = true
+                    end
+                    for _, e in ipairs(plan.pushes) do
+                        if patchProgress(base, id_by_num[e.num], e.page, e.completed,
+                                         username, password) then
+                            q[fp_by_num[e.num]] = nil; changed = true
+                        else
+                            logger.warn("tana_komga_push: push failed for chapter", e.num)
+                        end
+                    end
+                end
             end
-        else
-            pushed = true  -- collection gone: drop the orphan entry
-        end
-        if pushed then
-            q[fp] = nil
-            changed = true
-        else
-            logger.warn("tana_komga_push: push failed for", fp)
+            -- data fetch failed → leave this series queued for next time
         end
     end
     if changed then
