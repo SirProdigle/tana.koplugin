@@ -15,18 +15,6 @@ local T            = require("ffi/util").template
 
 local TanaActionSheet = {}
 
--- Format a resume line. Accepts a resume tuple from tana_manga.getResume
--- (fields: label, pct, page, total) and returns a compact button label.
-local function _resumeLabel(resume)
-    local parts = { "Continue " .. (resume.label or "") }
-    if resume.page and resume.total then
-        parts[#parts + 1] = string.format("p%d/%d", resume.page, resume.total)
-    elseif resume.pct then
-        parts[#parts + 1] = string.format("%d%%", math.floor((resume.pct or 0) * 100 + 0.5))
-    end
-    return table.concat(parts, "  \xc2\xb7  ")  -- "  ·  " (UTF-8 middle dot)
-end
-
 -- TanaActionSheet.show(opts)
 -- opts:
 --   title          string   — collection name + chapter count line
@@ -52,17 +40,6 @@ function TanaActionSheet.show(opts)
     -- Subtitle line: " · 255 chapters" appended to the title for context.
     -- Title is the only place to fit it — ButtonDialog has no subtitle slot.
     local title = opts.title or ""
-
-    if opts.resume and opts.resume.fp then
-        rows[#rows + 1] = {
-            {
-                text     = _resumeLabel(opts.resume),
-                callback = closing(function()
-                    if opts.on_open then opts.on_open(opts.resume.fp) end
-                end),
-            },
-        }
-    end
 
     if opts.first_fp then
         rows[#rows + 1] = {

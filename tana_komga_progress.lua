@@ -137,6 +137,33 @@ local function findContinuePoint(marker, username, password)
     return nil, "no server progress"
 end
 
+-- "Chapter %04d[.frac].cbz" — the normalised naming Maki's downloader uses.
+local function chapterFileName(number)
+    local num = tonumber(number)
+    if not num then return nil end
+    local int = math.floor(num)
+    local frac = num - int
+    if frac > 0 then
+        return string.format("Chapter %04d.%g.cbz", int, frac * 10)
+    end
+    return string.format("Chapter %04d.cbz", int)
+end
+
+-- Numerically sorted list of chapters present on disk.
+local function listLocalChapters(coll_path)
+    local out = {}
+    local ok, iter, dir_obj = pcall(lfs.dir, coll_path)
+    if not ok then return out end
+    for f in iter, dir_obj do
+        local num = f:match("^[Cc]hapter%s+(%d+%.?%d*)%.cbz$")
+        if num then
+            out[#out + 1] = { num = tonumber(num), fp = coll_path .. "/" .. f }
+        end
+    end
+    table.sort(out, function(a, b) return a.num < b.num end)
+    return out
+end
+
 -- Map a Komga book id to the locally downloaded file via the marker's
 -- fetched map (acquisition URLs embed "/books/<id>/"). Fall back to the
 -- normalised "Chapter %04d" name scheme.
@@ -161,6 +188,41 @@ local function localFileFor(marker, coll_path, target)
         if lfs.attributes(fp, "mode") == "file" then return fp end
     end
     return nil
+end
+
+-- Fetch a single book straight from Komga's REST download endpoint into
+-- the collection folder (part-file + rename). Returns the local path or
+-- nil. Maki's background sync later adopts the file into its ledger (the
+-- planner sees it on disk under the name it would have chosen itself).
+local function downloadBook(marker, coll_path, target, username, password)
+    local base = marker.catalog:match("^(https?://[^/]+)")
+    local fname = chapterFileName(target.number)
+    if not base or not fname then return nil end
+    local dest = coll_path .. "/" .. fname
+    local part = dest .. ".part"
+    local f = io.open(part, "wb")
+    if not f then return nil end
+    socketutil:set_timeout(15, 180)
+    local request = {
+        url     = string.format("%s/api/v1/books/%s/file", base, target.book_id),
+        method  = "GET",
+        headers = {},
+        sink    = ltn12.sink.file(f),  -- closes f when the request ends
+    }
+    if username then
+        request.headers["Authorization"] =
+            "Basic " .. mime.b64(username .. ":" .. (password or ""))
+    end
+    local code = socket.skip(1, http.request(request))
+    socketutil:reset_timeout()
+    if code ~= 200 then
+        pcall(os.remove, part)
+        logger.warn("tana_komga_progress: download HTTP", code, "for book", target.book_id)
+        return nil
+    end
+    local ok = os.rename(part, dest)
+    if not ok then pcall(os.remove, part); return nil end
+    return dest
 end
 
 -- Seed the reader's starting page for a not-yet-opened file so a
@@ -208,14 +270,55 @@ function M.continueFromServer(coll_path, on_open)
         end
         local fp = localFileFor(marker, coll_path, target)
         if not fp then
+            -- Not downloaded: fetch it right now, no questions asked.
+            Trapper:info(T(_("Downloading chapter %1…"), target.number or "?"))
+            fp = downloadBook(marker, coll_path, target, username, password)
+            Trapper:reset()
+        end
+        if fp then
+            if target.in_progress then seedPage(fp, target.page) end
+            if on_open then on_open(fp) end
+            return
+        end
+        -- Download failed: offer the nearest chapters that ARE on disk.
+        local ButtonDialog = require("ui/widget/buttondialog")
+        local tgt = tonumber(target.number)
+        local below, above
+        for _, c in ipairs(listLocalChapters(coll_path)) do
+            if tgt and c.num < tgt then below = c end
+            if tgt and c.num > tgt and not above then above = c end
+        end
+        if not (below or above) then
             UIManager:show(InfoMessage:new{
-                text = T(_("The server says you're up to chapter %1, but it isn't downloaded here yet.\n\nLong-press the series in Maki and 'Download all here' to fetch it."),
+                text = T(_("Failed to download chapter %1, and no other chapters are on the device."),
                          target.number or "?"),
             })
             return
         end
-        if target.in_progress then seedPage(fp, target.page) end
-        if on_open then on_open(fp) end
+        local dialog
+        local function pick(c)
+            return function()
+                UIManager:close(dialog)
+                if on_open then on_open(c.fp) end
+            end
+        end
+        local rows = {}
+        if above then
+            rows[#rows + 1] = { { text = T(_("Read chapter %1"), string.format("%g", above.num)),
+                                  callback = pick(above) } }
+        end
+        if below then
+            rows[#rows + 1] = { { text = T(_("Read chapter %1"), string.format("%g", below.num)),
+                                  callback = pick(below) } }
+        end
+        rows[#rows + 1] = { { text = _("Close"),
+                              callback = function() UIManager:close(dialog) end } }
+        dialog = ButtonDialog:new{
+            title       = T(_("Failed to download chapter %1"), target.number or "?"),
+            title_align = "center",
+            buttons     = rows,
+        }
+        UIManager:show(dialog)
     end)
 end
 
