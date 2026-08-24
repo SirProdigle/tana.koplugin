@@ -771,7 +771,46 @@ function Bookshelf:onCloseWidget()
     UIManager:close(_live_widget)
 end
 
+-- ─── Komga progress push-back (reader context) ─────────────────────────────
+-- Mirrors what Kindle page-streaming gets for free: page turns in manga
+-- chapters are queued locally (offline-safe) and pushed to Komga in the
+-- background, feeding the AniList bridge on chapter completion.
+
+function Bookshelf:onReaderReady()
+    self._komga_coll = nil
+    if not (self.ui and self.ui.document and self.ui.document.file) then return end
+    local ok, Push = pcall(require, "tana_komga_push")
+    if ok then self._komga_coll = Push.trackable(self.ui.document.file) end
+end
+
+function Bookshelf:onPageUpdate(page)
+    if not self._komga_coll then return end
+    local doc = self.ui and self.ui.document
+    if not (doc and doc.file and type(page) == "number") then return end
+    local ok, Push = pcall(require, "tana_komga_push")
+    if not ok then return end
+    local ok_pc, pages = pcall(function() return doc:getPageCount() end)
+    Push.notePage(doc.file, self._komga_coll, page, ok_pc and pages or nil)
+    Push.scheduleFlush()
+end
+
+function Bookshelf:onSuspend()
+    -- Persist synchronously; the actual network push happens on wake or
+    -- the next flush opportunity (standby is too fast to network in).
+    local ok, Push = pcall(require, "tana_komga_push")
+    if ok then Push.persist() end
+end
+
+function Bookshelf:onNetworkConnected()
+    local ok, Push = pcall(require, "tana_komga_push")
+    if ok then Push.scheduleFlush(5) end
+end
+
 function Bookshelf:onCloseDocument()
+    do -- final progress snapshot for the closing chapter, push shortly after
+        local ok, Push = pcall(require, "tana_komga_push")
+        if ok then Push.persist(); Push.scheduleFlush(2) end
+    end
     -- The walk cache has a 30s TTL; sideloaded / moved / mtime-changed files
     -- surface within that window without an explicit invalidate. Skipping
     -- invalidation here avoids re-walking the entire library + per-candidate

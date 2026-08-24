@@ -329,4 +329,9 @@ function M.buttonLabel()
     return _("Continue from server")
 end
 
+-- Internals shared with tana_komga_push (the write direction).
+M._readMarker      = readMarker
+M._findCredentials = findCredentials
+M._fetchJSON       = fetchJSON
+
 return M
