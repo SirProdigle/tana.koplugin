@@ -2634,6 +2634,20 @@ function BookshelfWidget:onResume()
     end
 end
 
+-- Android rotates asynchronously: show() restores the pre-read rotation
+-- and paints while Screen still reports the OLD size, then the surface is
+-- recreated (blank white) and KOReader broadcasts ScreenResize ~1s later.
+-- Without this the shelf is never repainted and the panel stays white.
+-- "full" because the whole surface is new. Don't return true — FM needs
+-- the event too.
+function BookshelfWidget:onScreenResize()
+    if self.width == Screen:getWidth() and self.height == Screen:getHeight() then
+        return
+    end
+    self:_rebuild()
+    UIManager:setDirty(self, "full")
+end
+
 -- Swipe gesture handlers. Layering by Y-position and state, most specific
 -- first:
 --   1. Swipe in the hero region → cycle previewed book on the shelf
