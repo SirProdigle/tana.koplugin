@@ -20,6 +20,8 @@ local socket      = require("socket")
 local socketutil  = require("socketutil")
 local http        = require("socket.http")
 
+local Chapter     = require("tana_chapter")
+
 local M = {}
 
 -- Komga returns JSON null for readProgress/metadata/media on books the
@@ -100,33 +102,6 @@ local function patchProgress(base, book_id, page, completed, username, password)
     })
     socketutil:reset_timeout()
     return code == 204 or code == 200
-end
-
--- Book id from the marker's fetched map (by local filename), falling back
--- to a series-books lookup matched on chapter number (covers chapters that
--- arrived outside Maki, e.g. tana's own auto-download).
-local function resolveBookId(Progress, marker, entry, username, password)
-    if type(marker.fetched) == "table" then
-        for url, rec in pairs(marker.fetched) do
-            if type(rec) == "table" and rec.file == entry.file then
-                local id = url:match("/books/([^/]+)/")
-                if id then return id end
-            end
-        end
-    end
-    local num = tonumber(entry.file and entry.file:match("[Cc]hapter%s+(%d+%.?%d*)"))
-    local base = marker.catalog and marker.catalog:match("^(https?://[^/]+)")
-    local series_id = marker.feed and marker.feed:match("/series/([^/?#]+)")
-    if not (num and base and series_id and Progress._fetchJSON) then return nil end
-    local data = Progress._fetchJSON(string.format(
-        "%s/api/v1/series/%s/books?size=1000", base, series_id), username, password)
-    if not data or type(data.content) ~= "table" then return nil end
-    for _, book in ipairs(data.content) do
-        local meta = tbl(book.metadata)
-        local bn = tonumber((meta and meta.number) or book.number)
-        if bn == num then return book.id end
-    end
-    return nil
 end
 
 -- Pure decision core: given this series' queued entries and the server's
@@ -229,8 +204,7 @@ function M.flush()
             if data and type(data.content) == "table" then
                 local books, id_by_num = {}, {}
                 for _, book in ipairs(data.content) do
-                    local meta = tbl(book.metadata)
-                    local num = tonumber((meta and meta.number) or book.number)
+                    local num = Chapter.bookNumber(book)
                     if num then
                         local rp    = tbl(book.readProgress)
                         local media = tbl(book.media)
@@ -243,15 +217,21 @@ function M.flush()
                         id_by_num[num] = book.id
                     end
                 end
+                -- Which Komga book each queued file is (ledger → server
+                -- file name → chapter number; see tana_chapter.lua). The
+                -- server's chapter number then drives the plan, so file
+                -- naming never matters.
                 local entries, fp_by_num = {}, {}
                 for _, it in ipairs(items) do
-                    local num = tonumber(it.e.file and it.e.file:match("[Cc]hapter%s+(%d+%.?%d*)"))
-                    if num and id_by_num[num] then
+                    local book = Chapter.resolveBook(it.e.file, data.content, marker.fetched)
+                    local num = book and Chapter.bookNumber(book)
+                    if num and id_by_num[num] == book.id then
                         entries[#entries + 1] = { num = num, page = it.e.page,
                                                   completed = it.e.completed }
                         fp_by_num[num] = it.fp
                     else
-                        -- Number unparseable / unknown on server: drop.
+                        -- Not a chapter of this series on the server: drop.
+                        logger.warn("tana_komga_push: no server book for", it.e.file)
                         q[it.fp] = nil; changed = true
                     end
                 end

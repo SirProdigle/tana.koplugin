@@ -23,6 +23,8 @@ local socket      = require("socket")
 local socketutil  = require("socketutil")
 local http        = require("socket.http")
 
+local Chapter     = require("tana_chapter")
+
 local M = {}
 
 local function readMarker(coll_path)
@@ -130,6 +132,7 @@ local function findContinuePoint(marker, username, password, quick)
         return {
             number      = (type(book.metadata) == "table" and book.metadata.number)
                           or book.number,
+            file        = Chapter.serverName(book),
             total       = series_total,
             name        = book.name,
             book_id     = book.id,
@@ -148,66 +151,70 @@ local function findContinuePoint(marker, username, password, quick)
     return nil, "no server progress"
 end
 
--- "Chapter %04d[.frac].cbz" — the normalised naming Maki's downloader uses.
+-- Fallback name for a chapter downloaded without knowing the server's file
+-- name: "Chapter %04d[.frac].cbz", Maki's normalised scheme.
 local function chapterFileName(number)
     local num = tonumber(number)
     if not num then return nil end
     local int = math.floor(num)
-    local frac = num - int
-    if frac > 0 then
-        return string.format("Chapter %04d.%g.cbz", int, frac * 10)
-    end
-    return string.format("Chapter %04d.cbz", int)
+    local frac = Chapter.format(num):match("%.(%d+)$")
+    return string.format("Chapter %04d%s.cbz", int, frac and ("." .. frac) or "")
 end
 
--- Numerically sorted list of chapters present on disk.
+local CHAPTER_EXT = { cbz = true, cbr = true, cb7 = true, cbt = true,
+                      zip = true, pdf = true, epub = true }
+
+-- Chapters present on disk, sorted by chapter number. Any naming scheme
+-- (see tana_chapter.lua); files without a recognisable number are left out.
 local function listLocalChapters(coll_path)
     local out = {}
     local ok, iter, dir_obj = pcall(lfs.dir, coll_path)
     if not ok then return out end
     for f in iter, dir_obj do
-        local num = f:match("^[Cc]hapter%s+(%d+%.?%d*)%.cbz$")
+        local ext = f:sub(1, 1) ~= "." and f:match("%.([^.]+)$")
+        local num = ext and CHAPTER_EXT[ext:lower()] and Chapter.number(f)
         if num then
-            out[#out + 1] = { num = tonumber(num), fp = coll_path .. "/" .. f }
+            out[#out + 1] = { num = num, fp = coll_path .. "/" .. f }
         end
     end
     table.sort(out, function(a, b) return a.num < b.num end)
     return out
 end
 
--- Map a Komga book id to the locally downloaded file via the marker's
--- fetched map (acquisition URLs embed "/books/<id>/"). Fall back to the
--- normalised "Chapter %04d" name scheme.
+-- The locally downloaded file for a server book: Maki's ledger (acquisition
+-- URLs embed book ids), then the name Maki would have saved the server file
+-- under, then any local file with the same chapter number.
 local function localFileFor(marker, coll_path, target)
     if type(marker.fetched) == "table" then
         for url, rec in pairs(marker.fetched) do
-            if url:find("/books/" .. target.book_id .. "/", 1, true)
+            if Chapter.bookIdFromUrl(url) == target.book_id
                and type(rec) == "table" and rec.file then
                 local fp = coll_path .. "/" .. rec.file
                 if lfs.attributes(fp, "mode") == "file" then return fp end
             end
         end
     end
-    local num = tonumber(target.number)
-    if num then
-        local int = math.floor(num)
-        local frac = num - int
-        local name = frac > 0
-            and string.format("Chapter %04d.%g.cbz", int, frac * 10)
-            or  string.format("Chapter %04d.cbz", int)
+    local name = Chapter.localName(target.file)
+    if name then
         local fp = coll_path .. "/" .. name
         if lfs.attributes(fp, "mode") == "file" then return fp end
+    end
+    local num = tonumber(target.number)
+    if num then
+        for _, c in ipairs(listLocalChapters(coll_path)) do
+            if c.num == num then return c.fp end
+        end
     end
     return nil
 end
 
 -- Fetch a single book straight from Komga's REST download endpoint into
 -- the collection folder (part-file + rename). Returns the local path or
--- nil. Maki's background sync later adopts the file into its ledger (the
--- planner sees it on disk under the name it would have chosen itself).
+-- nil. Saved under the name Maki would choose for the server file, so its
+-- background sync adopts it instead of downloading a second copy.
 local function downloadBook(marker, coll_path, target, username, password)
     local base = marker.catalog:match("^(https?://[^/]+)")
-    local fname = chapterFileName(target.number)
+    local fname = Chapter.localName(target.file) or chapterFileName(target.number)
     if not base or not fname then return nil end
     local dest = coll_path .. "/" .. fname
     local part = dest .. ".part"
@@ -347,10 +354,6 @@ end
 -- then reader sidecars. Local progress re-syncs to the server on the next
 -- network connection anyway (tana_komga_push), so the two labels converge.
 
-local function chapterNumFromName(name)
-    return tonumber(name and name:match("[Cc]hapter%s+(%d+%.?%d*)"))
-end
-
 -- Furthest local reading position in this collection.
 -- Returns { num, fp, total } or nil when nothing has been read locally.
 local function findLocalContinue(coll_path)
@@ -380,7 +383,7 @@ local function findLocalContinue(coll_path)
         if ok_q and type(q) == "table" then
             for _, e in pairs(q) do
                 if e.coll_path == coll_path then
-                    local num = chapterNumFromName(e.file)
+                    local num = Chapter.number(e.file)
                     if num and (not best_num or num > best_num) then
                         best_num, best_completed = num, e.completed
                     end

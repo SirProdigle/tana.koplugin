@@ -23,6 +23,7 @@
 -- data layer so it can be unit-tested without a KOReader runtime.
 
 local logger = require("logger")
+local Chapter = require("tana_chapter")
 
 local M = {}
 
@@ -248,22 +249,20 @@ function M.listChaptersSorted(coll_path)
             end
         end
     end
-    table.sort(out, function(a, b) return _natLess(a.name, b.name) end)
+    -- Chapter number first: scanlator prefixes ("Official_# 72",
+    -- "Unknown_# 73") would otherwise group by release team.
+    table.sort(out, function(a, b) return Chapter.less(a.name, b.name, _natLess) end)
     return out
 end
 
--- For UI: a short "Ch 97" label from a chapter filename. Tries common
--- patterns (Chapter 97, Ch. 97, c097, _097) and falls back to the bare
+-- For UI: a short "Ch. 97" label from a chapter filename, whatever the
+-- source calls its chapters (see tana_chapter.lua); falls back to the bare
 -- filename without extension.
 function M.chapterLabel(filename)
     if not filename then return "" end
-    local stem = filename:gsub("%.[^.]+$", "")
-    local n = stem:match("[Cc]hapter[%s_%-%.]*0*(%d+)")
-           or stem:match("[Cc]h[%.%s_%-]+0*(%d+)")
-           or stem:match("[Vv]ol[%s_%-%.]*0*(%d+)")
-           or stem:match("c0*(%d+)")
+    local n = Chapter.format(Chapter.number(filename))
     if n then return "Ch. " .. n end
-    return stem
+    return (filename:gsub("%.[^.]+$", ""))
 end
 
 -- ─── Resume lookup ───────────────────────────────────────────────────────
