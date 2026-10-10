@@ -81,6 +81,8 @@ function BookshelfWidget:init()
     self.width  = Screen:getWidth()
     self.height = Screen:getHeight()
     self.dimen  = Geom:new{ w = self.width, h = self.height }
+    -- softRefresh skips the startup double-show while this is fresh.
+    self._built_at = _gettime()
     self.chip   = G_reader_settings:readSetting("bookshelf_active_chip") or "recent"
     self.page   = 1   -- 1-based; page size = _pageSize() (4 cols × 2–4 rows)
     -- Class-level pointer to the live instance. Lets main.lua's
@@ -1298,8 +1300,9 @@ function BookshelfWidget:_pollExtraction()
     self._bim_poll_files = #still_pending > 0 and still_pending or nil
     if next(ready_paths) and self._inner_vgroup and self._shelf_dims then
         -- _swapShelvesInPlace re-fetches Book records (which re-query
-        -- BIM) and re-arms polling for whatever is still missing.
-        self:_swapShelvesInPlace()
+        -- BIM) and re-arms polling for whatever is still missing. Quiet:
+        -- a background cover landing isn't a page flip, so no DU.
+        self:_swapShelvesInPlace(true)
         -- Only swap the hero if its specific book was in the just-ready
         -- set. In expanded mode the "hero slot" is the static status strip
         -- (time/battery), which doesn't depend on book covers, so skip
@@ -2123,16 +2126,19 @@ function BookshelfWidget:_openSortMenu()
     UIManager:show(dialog, function() return "partial", frame.dimen end)
 end
 
--- _swapShelvesInPlace — pagination fast-path. Rebuilds only the shelf rows
+-- _swapShelvesInPlace(quiet) — pagination fast-path. Rebuilds only the shelf rows
 -- + footer, leaving hero + chips intact. Avoids redundant work (the chips
 -- never change with self.page; the hero only changes with _preview_book)
 -- AND avoids the use-after-free path where _buildHero rebuilds a SpineWidget
 -- against a freed BIM bb on _preview_book.cover_bb.
-function BookshelfWidget:_swapShelvesInPlace()
+function BookshelfWidget:_swapShelvesInPlace(quiet)
     -- Onyx: every shelf page-change paint (footer chevrons, swipes,
     -- hardware keys, drill-down paging) runs in fast DU, with a quality
     -- settle once flipping pauses. No-op off Android. See tana_eink.lua.
-    require("tana_eink").fastFlip()
+    -- `quiet` callers (background refreshes nobody is waiting on) keep the
+    -- EAC's quality waveform: a DU repaint landing on the in-flight paint
+    -- of a fresh shelf left it visibly half-drawn at boot.
+    if not quiet then require("tana_eink").fastFlip() end
     local _perf_t0 = _gettime()
     if not self._inner_vgroup or not self._shelf_dims then
         self:_rebuild()
@@ -2246,6 +2252,11 @@ end
 -- Falls back to _rebuild() when the live tree can't be reused (cold widget,
 -- expanded/tall layouts the in-place swap helpers don't handle).
 function BookshelfWidget:softRefresh()
+    -- Startup calls show() twice (create, then a second plugin instance's
+    -- _takeOver adopts the live widget). The tree is moments old, so a
+    -- refresh would only repaint identical pixels over the first paint's
+    -- in-flight e-ink update.
+    if self._built_at and _gettime() - self._built_at < 3 then return end
     local has_live_tree =
         self._inner_vgroup and self._shelf_dims
         and self._hero_parent and self._hero_dims
@@ -2274,7 +2285,7 @@ function BookshelfWidget:softRefresh()
     end
     self._soft_refresh_shelves_fn = function()
         self._soft_refresh_shelves_fn = nil
-        self:_swapShelvesInPlace()
+        self:_swapShelvesInPlace(true)
     end
     UIManager:scheduleIn(0.15, self._soft_refresh_shelves_fn)
 end
